@@ -52,8 +52,14 @@ export function analyseCapture(capture: AccelCapture, options: AnalyseOptions = 
 	}
 	const peaks = bandMax > SILENCE_FLOOR ? findPeaks(bandFreqs, bandPsd) : [];
 
+	// Feed the measured damping ratio of the dominant resonance into the fit when it resolved -
+	// a machine-specific ratio beats the generic default for shaper frequency selection.
+	const measuredZeta = peaks[0]?.dampingRatio;
 	const recommendation = peaks.length > 0
-		? findBestShaper(spectrum.freqs, normalized, options)
+		? findBestShaper(spectrum.freqs, normalized, {
+			...options,
+			dampingRatio: options.dampingRatio ?? (measuredZeta && measuredZeta >= 0.02 && measuredZeta <= 0.3 ? measuredZeta : undefined),
+		})
 		: null;
 
 	return {

@@ -17,7 +17,16 @@
 		"advancedHint": "Defaults suit almost every machine. The frequency sweep covers the whole band in one run.",
 		"maxSmoothing": "Max smoothing (mm)",
 		"customMoves": "Custom move profile (one G-code per line)",
-		"loadCsv": "Load CSV"
+		"loadCsv": "Load CSV",
+		"captures": "Captures",
+		"noCaptures": "No capture files found",
+		"diagnostics": "Download diagnostics report"
+	},
+	"update": {
+		"available": "Resonance Lab {version} is available.",
+		"apply": "Update now",
+		"installed": "Update installed — reload to finish.",
+		"reload": "Reload"
 	},
 	"methods": {
 		"sweep": "Frequency sweep (recommended)",
@@ -34,6 +43,7 @@
 		"detail": "If the dominant channel doesn't match the moved axis, fix the M955 I (orientation) parameter before trusting any per-axis analysis."
 	},
 	"belts": {
+		"notCoreXY": "Belt comparison needs CoreXY-style kinematics (diagonal belt paths). Your machine reports a different kinematics type.",
 		"beltA": "Belt A (X+Y)",
 		"beltB": "Belt B (X−Y)",
 		"matched": "Belts are well matched ({sim}% similar)",
@@ -63,6 +73,8 @@
 		"before": "Before (no shaper)",
 		"after": "After (shaper active)",
 		"source": "Source: {source}",
+		"spectrum": "Spectrum",
+		"spectrogram": "Spectrogram",
 		"samples": "{count} samples @ {rate} Hz",
 		"peak": "peak {freq} Hz"
 	},

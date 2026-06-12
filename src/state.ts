@@ -5,12 +5,15 @@
 import { ref } from "vue";
 
 import type { CaptureAnalysis } from "./analysis/pipeline";
+import type { AccelCapture } from "./capture/csv";
 
 export interface SessionResult {
 	axis: string;
 	when: Date;
 	source: string;
 	analysis: CaptureAnalysis;
+	/** Raw capture retained for views that need the time series (spectrogram). */
+	capture?: AccelCapture;
 }
 
 export const lastResult = ref<SessionResult | null>(null);

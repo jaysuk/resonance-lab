@@ -39,15 +39,40 @@
 					<v-textarea v-if="method === 'custom'" v-model="adv.customMoves" class="mt-2" density="compact" variant="outlined"
 								rows="4" hide-details :label="$t('plugins.resonanceLab.controls.customMoves')" />
 					<div class="text-caption text-medium-emphasis mt-2">{{ $t("plugins.resonanceLab.controls.advancedHint") }}</div>
+					<v-divider class="my-2" />
+					<v-btn size="small" variant="tonal" block prepend-icon="mdi-bug-outline" @click="downloadDiagnostics">
+						{{ $t("plugins.resonanceLab.controls.diagnostics") }}
+					</v-btn>
 				</v-card>
 			</v-menu>
 
 			<v-spacer />
+			<v-menu @update:model-value="(open: boolean) => open && refreshRemoteCaptures()">
+				<template #activator="{ props: m }">
+					<v-btn v-bind="m" variant="text" prepend-icon="mdi-folder-open-outline" :disabled="running || !isConnected">
+						{{ $t("plugins.resonanceLab.controls.captures") }}
+					</v-btn>
+				</template>
+				<v-list density="compact" max-height="320">
+					<v-list-item v-if="remoteCaptures.length === 0" :title="$t('plugins.resonanceLab.controls.noCaptures')" disabled />
+					<v-list-item v-for="f in remoteCaptures" :key="f" :title="f" @click="openRemoteCapture(f)" />
+				</v-list>
+			</v-menu>
 			<v-btn variant="text" prepend-icon="mdi-file-upload-outline" :disabled="running" @click="filePicker?.click()">
 				{{ $t("plugins.resonanceLab.controls.loadCsv") }}
 			</v-btn>
 			<input ref="filePicker" type="file" accept=".csv" class="d-none" @change="loadLocalCsv">
 		</div>
+
+		<!-- Self-update offer -->
+		<v-alert v-if="updatePendingReload" type="success" variant="tonal" density="compact" class="mb-3">
+			{{ $t("plugins.resonanceLab.update.installed") }}
+			<template #append><v-btn size="small" color="success" prepend-icon="mdi-restart" @click="reload">{{ $t("plugins.resonanceLab.update.reload") }}</v-btn></template>
+		</v-alert>
+		<v-alert v-else-if="updateState?.scenario === 'pluginUpdate'" type="info" variant="tonal" density="compact" class="mb-3">
+			{{ $t("plugins.resonanceLab.update.available", { version: updateState.latestVersion }) }}
+			<template #append><v-btn size="small" color="primary" :loading="updateApplying" prepend-icon="mdi-download" @click="applyUpdateNow">{{ $t("plugins.resonanceLab.update.apply") }}</v-btn></template>
+		</v-alert>
 
 		<!-- Readiness / progress -->
 		<v-alert v-if="!isConnected" type="info" variant="tonal" density="compact" class="mb-3">
@@ -92,8 +117,15 @@
 			<v-alert v-if="verifyResult" :type="verifyResult.reduction > 0.5 ? 'success' : 'warning'" variant="tonal" density="comfortable" class="mb-2">
 				{{ $t("plugins.resonanceLab.results.verified", { reduction: (verifyResult.reduction * 100).toFixed(0) }) }}
 			</v-alert>
+			<div v-if="!verifyResult && result.capture" class="d-flex justify-end mb-1">
+				<v-btn-toggle v-model="chartMode" density="compact" variant="outlined" mandatory>
+					<v-btn value="spectrum" size="small" prepend-icon="mdi-chart-bell-curve">{{ $t("plugins.resonanceLab.results.spectrum") }}</v-btn>
+					<v-btn value="spectrogram" size="small" prepend-icon="mdi-blur-linear">{{ $t("plugins.resonanceLab.results.spectrogram") }}</v-btn>
+				</v-btn-toggle>
+			</div>
 			<div class="flex-grow-1" style="min-height: 320px">
-				<LineChart v-if="verifyResult"
+				<SpectrogramView v-if="!verifyResult && chartMode === 'spectrogram' && spectrogram" :spec="spectrogram" />
+				<LineChart v-else-if="verifyResult"
 						   :labels="verifyResult.before.labels"
 						   :series="[
 						   	{ label: $t('plugins.resonanceLab.results.before'), data: verifyResult.before.data, color: '#2196f3' },
@@ -171,11 +203,13 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 
 import { useMachineStore } from "@/stores/machine";
 import { LogLevel, useUiStore } from "@/stores/ui";
 import i18n from "@/i18n";
+
+import { buildReport, downloadReport } from "dwc-plugin-runtime";
 
 import { compareBelts } from "./analysis/belts";
 import { checkOrientation, type OrientationCheck } from "./analysis/orientation";
@@ -187,9 +221,15 @@ import {
 	downloadCapture, findAccelerometers, runBeltCapture, runFixedExcitation, runNativeCapture,
 	runSpeedPointCapture, runSweepCapture, type MachineIO,
 } from "./capture/orchestrator";
+import { computeSpectrogram } from "./analysis/stft";
 import LineChart from "./components/LineChart.vue";
+import SpectrogramView from "./components/SpectrogramView.vue";
 import SpectrumChart from "./components/SpectrumChart.vue";
 import { beltResult, lastResult, measurementRunning, profileResult } from "./state";
+import { applyUpdateNow, runUpdateCheck, updateApplying, updatePendingReload, updateState } from "./updateCheck";
+
+onMounted(() => { void runUpdateCheck(); });
+const reload = () => window.location.reload();
 
 const machineStore = useMachineStore();
 const uiStore = useUiStore();
@@ -269,6 +309,11 @@ async function measure(): Promise<void> {
 	orientationResult.value = null;
 	verifyResult.value = null;
 	try {
+		if (method.value === "belts" && !String((machineStore.model as { move?: { kinematics?: { name?: string } } }).move?.kinematics?.name ?? "").toLowerCase().includes("core")) {
+			error.value = t("belts.notCoreXY");
+			running.value = false;
+			return;
+		}
 		if (method.value === "excite") {
 			const run = await runFixedExcitation(io, {
 				accelerometer: accel, axis: selectedAxis.value, center: axisCenter(),
@@ -409,14 +454,49 @@ const profileVerdict = computed(() => {
 });
 
 function parse(csvText: string) {
-	return analyseCapture(parseAccelCsv(csvText), {
-		maxSmoothing: adv.value.maxSmoothing > 0 ? adv.value.maxSmoothing : undefined,
-	});
+	const capture = parseAccelCsv(csvText);
+	return {
+		capture,
+		analysis: analyseCapture(capture, { maxSmoothing: adv.value.maxSmoothing > 0 ? adv.value.maxSmoothing : undefined }),
+	};
 }
 
-function finish(analysis: ReturnType<typeof analyseCapture>, source: string): void {
-	result.value = { axis: selectedAxis.value, when: new Date(), source, analysis };
-	overlay.value = analysis.recommendation?.best.name ?? "mzv";
+function finish(parsed: ReturnType<typeof parse>, source: string): void {
+	result.value = { axis: selectedAxis.value, when: new Date(), source, analysis: parsed.analysis, capture: parsed.capture };
+	overlay.value = parsed.analysis.recommendation?.best.name ?? "mzv";
+	chartMode.value = "spectrum";
+}
+
+// ── Spectrogram view ─────────────────────────────────────────────────────────
+const chartMode = ref<"spectrum" | "spectrogram">("spectrum");
+const spectrogram = computed(() => {
+	const r = result.value;
+	if (!r?.capture || chartMode.value !== "spectrogram") {
+		return null;
+	}
+	// Prefer the channel matching the tested axis; fall back to the first.
+	const idx = Math.max(0, r.capture.axes.findIndex((a) => a.toUpperCase() === r.axis.toUpperCase()));
+	return computeSpectrogram(r.capture.channels[idx], r.capture.samplingRate);
+});
+
+// ── Remote capture browser (0:/sys/accelerometer) ───────────────────────────
+const remoteCaptures = ref<Array<string>>([]);
+async function refreshRemoteCaptures(): Promise<void> {
+	try {
+		const files = await (machineStore as unknown as { getFileList(dir: string): Promise<Array<{ name: string; isDirectory?: boolean }>> })
+			.getFileList("0:/sys/accelerometer");
+		remoteCaptures.value = files.filter((f) => !f.isDirectory && f.name.toLowerCase().endsWith(".csv")).map((f) => f.name).sort().reverse();
+	} catch {
+		remoteCaptures.value = [];
+	}
+}
+async function openRemoteCapture(name: string): Promise<void> {
+	try {
+		finish(parse(await io.download(`0:/sys/accelerometer/${name}`)), name);
+		error.value = "";
+	} catch (e) {
+		error.value = (e as Error).message || String(e);
+	}
 }
 
 async function loadLocalCsv(ev: Event): Promise<void> {
@@ -460,6 +540,24 @@ const verdict = computed(() => {
 		detail: t("results.detail", { smoothing: fit.smoothing.toFixed(3), accel: fit.maxAccel, peak: a.peaks[0]?.freq.toFixed(1) ?? "?" }),
 	};
 });
+
+function downloadDiagnostics(): void {
+	const r = result.value;
+	downloadReport(buildReport({
+		pluginId: "ResonanceLab",
+		model: machineStore.model,
+		state: r ? {
+			axis: r.axis, source: r.source, when: r.when.toISOString(),
+			samplingRate: r.analysis.samplingRate, overflows: r.analysis.overflows,
+			sampleCount: r.analysis.sampleCount,
+			peaks: r.analysis.peaks.slice(0, 5),
+			// Strip the per-bin response array - the report only needs the verdict numbers.
+			best: r.analysis.recommendation
+				? (({ name, freq, vibrations, smoothing, maxAccel }) => ({ name, freq, vibrations, smoothing, maxAccel }))(r.analysis.recommendation.best)
+				: null,
+		} : undefined,
+	}));
+}
 
 async function applyShaper(): Promise<void> {
 	const fit = rec.value?.allShapers.find((s) => s.name === overlay.value) ?? rec.value?.best;
