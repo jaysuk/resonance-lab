@@ -303,6 +303,25 @@ function centerOf(letter: string): number {
 		? Math.round((ax.min + ax.max) / 2) : 0;
 }
 
+/**
+ * Wait until the machine reports idle. sendCode does not reliably block until a long M98 macro
+ * completes (live-printer finding), so motion completion must be confirmed from the object model
+ * before starting the next run or overwriting files.
+ */
+async function waitForIdle(maxMs: number): Promise<void> {
+	const deadline = Date.now() + maxMs;
+	for (;;) {
+		const status = String((machineStore.model as { state?: { status?: string } }).state?.status ?? "");
+		if (status === "idle" || status === "") {
+			return;
+		}
+		if (Date.now() >= deadline) {
+			throw new Error(t("stillBusy"));
+		}
+		await new Promise((r) => setTimeout(r, 1000));
+	}
+}
+
 async function measure(): Promise<void> {
 	const accel = selectedAccel.value ?? accelItems.value[0];
 	if (!accel) {
@@ -339,6 +358,7 @@ async function measure(): Promise<void> {
 			for (const ax of ["X", "Y"] as const) {
 				const run = await runNativeCapture(io, { accelerometer: accel, axis: ax, center: centerOf(ax), span: 20 });
 				const capture = parseAccelCsv(await downloadCapture(io, run));
+				await waitForIdle(30000);
 				firstCapture = firstCapture ?? capture;
 				moveResults[ax] = analyzeAxisBurst(capture);
 			}
@@ -347,8 +367,12 @@ async function measure(): Promise<void> {
 			lastResult.value = null;
 		} else if (method.value === "belts") {
 			const opts = { accelerometer: accel, centerX: centerOf("X"), centerY: centerOf("Y"), startFreq: adv.value.startFreq, endFreq: adv.value.endFreq, hzPerSec: adv.value.hzPerSec };
-			const a = await downloadCapture(io, await runBeltCapture(io, { ...opts, belt: "a" }));
-			const b = await downloadCapture(io, await runBeltCapture(io, { ...opts, belt: "b" }));
+			const runA = await runBeltCapture(io, { ...opts, belt: "a" });
+			const a = await downloadCapture(io, runA);
+			await waitForIdle((runA.program.durationSec + 60) * 1000);
+			const runB = await runBeltCapture(io, { ...opts, belt: "b" });
+			const b = await downloadCapture(io, runB);
+			await waitForIdle((runB.program.durationSec + 60) * 1000);
 			lastResult.value = null;
 			beltResult.value = compareBelts(parseAccelCsv(a), parseAccelCsv(b));
 		} else if (method.value === "profile") {
@@ -356,6 +380,7 @@ async function measure(): Promise<void> {
 			for (let speed = 30; speed <= 180; speed += 30) {
 				const run = await runSpeedPointCapture(io, { accelerometer: accel, axis: selectedAxis.value, center: axisCenter(), speed });
 				entries.push({ speed, capture: parseAccelCsv(await downloadCapture(io, run)) });
+				await waitForIdle(60000);
 			}
 			lastResult.value = null;
 			profileResult.value = buildVibrationProfile(entries);

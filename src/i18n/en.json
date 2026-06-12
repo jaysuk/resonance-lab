@@ -90,5 +90,6 @@
 	},
 	"embeddable": {
 		"caption": "Resonance summary"
-	}
+	},
+	"stillBusy": "The machine is still moving from the previous run — wait for it to finish and try again."
 }

@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { analyseCapture } from "../src/analysis/pipeline";
 import { parseAccelCsv } from "../src/capture/csv";
 import {
-	findAccelerometers, runNativeCapture, runSweepCapture, SWEEP_PROGRAM_PATH, type MachineIO,
+	findAccelerometers, runNativeCapture, runSweepCapture, type MachineIO,
 } from "../src/capture/orchestrator";
 
 /** Synthesize a realistic capture CSV: a machine ringing at f0 with noise, sampled at fs. */
@@ -90,11 +90,13 @@ describe("capture orchestrator", () => {
 			accelerometer: accel, axis: "X", center: 150, startFreq: 5, endFreq: 30, expectedSampleRate: 1000,
 		});
 		expect(calls[0].kind).toBe("upload");
-		expect(calls[0].arg).toBe(SWEEP_PROGRAM_PATH);
+		// Per-run program file: the firmware holds the macro open while it runs, so a shared name
+		// can't be overwritten for the next run.
+		expect(calls[0].arg).toMatch(/^0:\/sys\/rlab-sweep-x-\d+\.g$/);
 		expect(calls[0].content).toContain('M593 P"none"');
 		const cmd = calls[1];
 		expect(cmd.kind).toBe("code");
-		expect(cmd.arg).toMatch(/^M400 M956 P121\.0 S\d+ A0 F"rlab-sweep-x-\d+\.csv" M98 P"0:\/sys\/resonanceLab-sweep\.g"$/);
+		expect(cmd.arg).toMatch(/^M400 M956 P121\.0 S\d+ A0 F"rlab-sweep-x-(\d+)\.csv" M98 P"0:\/sys\/rlab-sweep-x-\1\.g"$/);
 		// Sample count covers the duration with margin.
 		const s = parseInt(/S(\d+)/.exec(cmd.arg)![1], 10);
 		expect(s).toBeGreaterThan(run.program.durationSec * 1000);

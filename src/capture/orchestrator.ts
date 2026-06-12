@@ -53,7 +53,14 @@ async function sendChecked(io: MachineIO, code: string): Promise<void> {
 	}
 }
 
-export const SWEEP_PROGRAM_PATH = "0:/sys/resonanceLab-sweep.g";
+/**
+ * Program files are PER-RUN: the firmware holds the macro file open while M98 executes, and
+ * sendCode does NOT reliably block until a long macro completes - overwriting a shared filename
+ * for the next run fails with "Cannot delete file because it is open" (live-printer finding).
+ */
+export function sweepProgramPath(captureName: string): string {
+	return `0:/sys/${captureName.replace(/\.csv$/, "")}.g`;
+}
 export const CAPTURE_DIR = "0:/sys/accelerometer";
 
 export interface SweepCaptureOptions extends SweepOptions {
@@ -86,7 +93,8 @@ export async function runSweepCapture(io: MachineIO, options: SweepCaptureOption
 	const name = captureName("sweep", options.axis);
 	const csvPath = `${CAPTURE_DIR}/${name}`;
 
-	await io.upload(SWEEP_PROGRAM_PATH, program.lines.join("\n") + "\n");
+	const progPath = sweepProgramPath(name);
+	await io.upload(progPath, program.lines.join("\n") + "\n");
 
 	// Size the capture to the program duration plus margin for the ring-down tail.
 	const rate = options.expectedSampleRate ?? 1000;
@@ -94,7 +102,7 @@ export async function runSweepCapture(io: MachineIO, options: SweepCaptureOption
 
 	// M400 drains motion, M956 arms the recorder (A0 = start now, F names the file), M98 runs the
 	// program; sendCode resolves when the whole line - including the macro - has completed.
-	await sendChecked(io, `M400 M956 P${options.accelerometer.id} S${samples} A0 F"${name}" M98 P"${SWEEP_PROGRAM_PATH}"`);
+	await sendChecked(io, `M400 M956 P${options.accelerometer.id} S${samples} A0 F"${name}" M98 P"${progPath}"`);
 	return { csvPath, program };
 }
 
@@ -124,10 +132,11 @@ export async function runBeltCapture(io: MachineIO, options: BeltCaptureOptions)
 	});
 	const name = captureName(`belt${options.belt}`, "xy");
 	const csvPath = `${CAPTURE_DIR}/${name}`;
-	await io.upload(SWEEP_PROGRAM_PATH, program.lines.join("\n") + "\n");
+	const progPath = sweepProgramPath(name);
+	await io.upload(progPath, program.lines.join("\n") + "\n");
 	const rate = options.expectedSampleRate ?? 1000;
 	const samples = Math.min(200000, Math.ceil((program.durationSec + 2) * rate));
-	await sendChecked(io, `M400 M956 P${options.accelerometer.id} S${samples} A0 F"${name}" M98 P"${SWEEP_PROGRAM_PATH}"`);
+	await sendChecked(io, `M400 M956 P${options.accelerometer.id} S${samples} A0 F"${name}" M98 P"${progPath}"`);
 	return { csvPath, program };
 }
 
@@ -209,10 +218,11 @@ export async function runFixedExcitation(io: MachineIO, options: SweepCaptureOpt
 	const program = generateFixedExcitation(options);
 	const name = captureName(`fix${Math.round(options.freq)}`, options.axis);
 	const csvPath = `${CAPTURE_DIR}/${name}`;
-	await io.upload(SWEEP_PROGRAM_PATH, program.lines.join("\n") + "\n");
+	const progPath = sweepProgramPath(name);
+	await io.upload(progPath, program.lines.join("\n") + "\n");
 	const rate = options.expectedSampleRate ?? 1000;
 	const samples = Math.min(200000, Math.ceil((program.durationSec + 2) * rate));
-	await sendChecked(io, `M400 M956 P${options.accelerometer.id} S${samples} A0 F"${name}" M98 P"${SWEEP_PROGRAM_PATH}"`);
+	await sendChecked(io, `M400 M956 P${options.accelerometer.id} S${samples} A0 F"${name}" M98 P"${progPath}"`);
 	return { csvPath, program };
 }
 
