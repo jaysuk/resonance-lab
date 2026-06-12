@@ -78,7 +78,10 @@ describe("capture orchestrator", () => {
 			],
 		};
 		const found = findAccelerometers(model);
-		expect(found).toEqual([{ id: "121", label: "TOOL1LC" }]);
+		// CAN-board accelerometers must carry the .0 index (P121.0); plain P121 is "not found".
+		expect(found).toEqual([{ id: "121.0", label: "TOOL1LC" }]);
+		expect(findAccelerometers({ boards: [{ canAddress: 0, shortName: "MB6HC", accelerometer: {} }] }))
+			.toEqual([{ id: "0", label: "MB6HC" }]);
 	});
 
 	it("sweep capture uploads the program then arms the recorder around M98", async () => {

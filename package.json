@@ -1,6 +1,6 @@
 {
   "name": "resonance-lab",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Resonance Lab — input shaping & resonance analysis plugin for DuetWebControl (Vue 3), inspired by the Shake&Tune methodology.",
   "private": true,
   "license": "GPL-3.0-or-later",

@@ -36,7 +36,9 @@ export function findAccelerometers(model: unknown): Array<AccelerometerRef> {
 		const b = boards[i];
 		if (b && b.accelerometer) {
 			const can = b.canAddress ?? 0;
-			found.push({ id: String(can), label: b.shortName || b.name || `Board ${can}` });
+			// M955/M956 address an accelerometer as <canAddress>.<index> for CAN boards (e.g. P124.0);
+			// only the mainboard's own accelerometer is plain P0.
+			found.push({ id: can > 0 ? `${can}.0` : "0", label: b.shortName || b.name || `Board ${can}` });
 		}
 	}
 	return found;
