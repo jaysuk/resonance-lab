@@ -1,0 +1,36 @@
+{
+	"menuCaption": "Resonance Lab",
+	"title": "Resonance Lab",
+	"subtitle": "Input shaping & resonance analysis — measure, analyse, recommend, verify.",
+	"notConnected": "Connect to your machine to check for an accelerometer.",
+	"accelFound": "Accelerometer ready on: {boards}.",
+	"accelMissing": "No accelerometer found in the object model. Configure one with M955 to run measurements.",
+	"comingSoon": "Coming soon",
+	"stages": {
+		"measure": {
+			"title": "Measure",
+			"description": "Run controlled excitation moves and capture accelerometer samples per axis / belt."
+		},
+		"analyse": {
+			"title": "Analyse",
+			"description": "Compute power spectral density, find resonance peaks, compare belts and detect anomalies."
+		},
+		"recommend": {
+			"title": "Recommend",
+			"description": "Suggest the best input-shaper type and frequency with predicted smoothing and remaining vibration."
+		},
+		"verify": {
+			"title": "Verify",
+			"description": "Re-measure with the shaper applied and confirm ringing is gone before saving to config."
+		}
+	},
+	"panel": {
+		"ready": "Accelerometer ready",
+		"notReady": "No accelerometer detected",
+		"noData": "No measurements yet — open the lab to run one.",
+		"open": "Open Resonance Lab"
+	},
+	"embeddable": {
+		"caption": "Resonance summary"
+	}
+}

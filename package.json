@@ -1,0 +1,28 @@
+{
+  "name": "resonance-lab",
+  "version": "0.1.0",
+  "description": "Resonance Lab — input shaping & resonance analysis plugin for DuetWebControl (Vue 3), inspired by the Shake&Tune methodology.",
+  "private": true,
+  "license": "GPL-3.0-or-later",
+  "homepage": "https://github.com/jaysuk/resonance-lab",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "typecheck": "dwc-plugin-typecheck",
+    "verify-build": "dwc-plugin-verify-build",
+    "changelog": "node scripts/changelog.mjs"
+  },
+  "dependencies": {
+    "dwc-plugin-runtime": "github:jaysuk/dwc-plugin-runtime#v0.4.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.2.4",
+    "@vitest/coverage-v8": "^4.1.8",
+    "dwc-plugin-test-kit": "github:jaysuk/dwc-plugin-test-kit#v0.2.2",
+    "happy-dom": "^15.11.7",
+    "vitest": "^4.1.8",
+    "vue": "^3.5.30",
+    "vuetify": "^4.1.0"
+  }
+}

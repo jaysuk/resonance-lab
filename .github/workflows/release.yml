@@ -1,0 +1,129 @@
+name: Release
+
+# Builds the installable plugin ZIP against DuetWebControl's source and creates a GitHub Release for
+# it - no local build needed. Releases are DELIBERATE: nothing is published on ordinary pushes; only
+# pushing a version tag triggers one:
+#
+#   (bump plugin.json + package.json, commit) then:
+#   git tag v0.2.0 && git push origin v0.2.0
+#
+# Notes are a Conventional-Commit changelog plus a footer carrying install steps, the DWC version
+# built against, and the machine-readable `dwc-plugin-update` comment that the plugin's update
+# checker parses - so releases made this way never break self-update.
+#
+# You can also run it manually (Actions -> Release -> Run workflow) to build a ZIP as an artifact,
+# optionally against a different DWC ref.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      dwc-ref:
+        description: DuetWebControl branch/tag/sha to build against
+        default: v3.7-dev
+
+permissions:
+  contents: write # create the Release and upload the asset
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: plugin
+          fetch-depth: 0 # full history + tags so the changelog generator can find the previous tag
+          fetch-tags: true
+
+      - name: Checkout DuetWebControl
+        uses: actions/checkout@v4
+        with:
+          repository: Duet3D/DuetWebControl
+          ref: ${{ github.event.inputs.dwc-ref || 'v3.7-dev' }}
+          path: DuetWebControl
+
+      # Record exactly which DWC the ZIP is built against, for the release notes.
+      - name: Capture DuetWebControl build info
+        id: dwc
+        run: |
+          echo "version=$(node -p "require('./DuetWebControl/package.json').version")" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git -C DuetWebControl rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          echo "ref=${{ github.event.inputs.dwc-ref || 'v3.7-dev' }}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@v4
+        with: { node-version: 24 }
+
+      # The tag must match the version stamped into the ZIP/manifest, so a release can't ship a
+      # mismatched build.
+      - name: Verify tag matches plugin version
+        if: startsWith(github.ref, 'refs/tags/')
+        working-directory: plugin
+        run: |
+          VER=$(node -p "require('./plugin.json').version")
+          TAG="${GITHUB_REF_NAME#v}"
+          if [ "$VER" != "$TAG" ]; then
+            echo "::error::Tag '$TAG' != plugin.json version '$VER'. Bump plugin.json + package.json and re-tag."
+            exit 1
+          fi
+
+      - name: Install DuetWebControl
+        working-directory: DuetWebControl
+        run: npm install
+
+      - name: Install plugin (and its bundled deps into DWC)
+        working-directory: plugin
+        run: |
+          npm install
+          # Install the plugin's runtime dependencies into DWC with their exact specs (github: specs
+          # used verbatim, registry specs as name@range) so the build/type-check can resolve them.
+          SPECS=$(node -p "Object.entries(require('./package.json').dependencies||{}).map(([k,v])=>/[:\\/]/.test(v)?v:k+'@'+v).join(' ')")
+          if [ -n "$SPECS" ]; then (cd ../DuetWebControl && npm install --no-save $SPECS); fi
+
+      - name: Type-check against DWC
+        working-directory: plugin
+        env:
+          DWC_DIR: ${{ github.workspace }}/DuetWebControl
+        run: npm run typecheck
+
+      - name: Build installable ZIP
+        working-directory: plugin
+        env:
+          DWC_DIR: ${{ github.workspace }}/DuetWebControl
+        run: npm run verify-build
+
+      # Release body = Conventional-Commit changelog + a footer with install instructions, the DWC
+      # version built against, and the dwc-plugin-update metadata comment for the update checker.
+      - name: Generate release notes
+        id: changelog
+        if: startsWith(github.ref, 'refs/tags/')
+        working-directory: plugin
+        env:
+          DWC_VERSION: ${{ steps.dwc.outputs.version }}
+          DWC_SHA: ${{ steps.dwc.outputs.sha }}
+          DWC_REF: ${{ steps.dwc.outputs.ref }}
+        run: |
+          {
+            echo 'body<<__CHANGELOG_EOF__'
+            node scripts/changelog.mjs
+            echo
+            node scripts/release-footer.mjs
+            echo
+            echo '__CHANGELOG_EOF__'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Publish Release with the ZIP (tag push)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: false # auto-publish: notes are generated
+          body: ${{ steps.changelog.outputs.body }}
+          files: plugin/ResonanceLab-*.zip
+
+      - name: Upload ZIP as an artifact (manual runs)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ResonanceLab-plugin
+          path: plugin/ResonanceLab-*.zip

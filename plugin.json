@@ -1,0 +1,16 @@
+{
+	"id": "ResonanceLab",
+	"name": "Resonance Lab",
+	"author": "James Skitt",
+	"version": "0.1.0",
+	"license": "GPL-3.0-or-later",
+	"homepage": "https://github.com/jaysuk/resonance-lab",
+	"dwcVersion": "auto-major",
+	"tags": [
+		"input shaping",
+		"resonance",
+		"accelerometer",
+		"tuning",
+		"vibration"
+	]
+}
