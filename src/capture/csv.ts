@@ -15,6 +15,15 @@ export interface AccelCapture {
 	overflows: number;
 }
 
+// Firmware variants punctuate the trailer differently ("Rate 1342 overflows 0",
+// "Rate: 1342, overflows: 0", trailing commas from the CSV writer...) - match loosely.
+const TRAILER_RE = /rate\D{0,3}(\d+(?:\.\d+)?)\D+overflows\D{0,3}(\d+)/i;
+
+/** True once the capture file carries its rate/overflows trailer, i.e. the firmware finished writing. */
+export function hasCaptureTrailer(text: string): boolean {
+	return TRAILER_RE.test(text.slice(-200));
+}
+
 export function parseAccelCsv(text: string): AccelCapture {
 	const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
 	if (lines.length < 3) {
@@ -25,8 +34,16 @@ export function parseAccelCsv(text: string): AccelCapture {
 		throw new Error("Not an accelerometer CSV (missing Sample header)");
 	}
 
-	// Sampling rate + overflow count live in the final line, appended after the samples.
-	const trailer = /Rate (\d+(?:\.\d+)?) overflows (\d+)/.exec(lines[lines.length - 1]);
+	// Sampling rate + overflow count live at the end, appended after the samples. Scan the last few
+	// lines: some firmware builds emit the trailer on its own line, some append extra blank cells.
+	let trailer: RegExpExecArray | null = null;
+	let trailerIdx = lines.length;
+	for (let i = lines.length - 1; i >= Math.max(1, lines.length - 3) && !trailer; i--) {
+		trailer = TRAILER_RE.exec(lines[i]);
+		if (trailer) {
+			trailerIdx = i;
+		}
+	}
 	if (!trailer) {
 		throw new Error("Accelerometer CSV is missing its rate/overflows trailer (truncated capture?)");
 	}
@@ -34,7 +51,7 @@ export function parseAccelCsv(text: string): AccelCapture {
 	const overflows = parseInt(trailer[2], 10);
 
 	const axes = headers.slice(1);
-	const rows = lines.slice(1, lines.length - 1);
+	const rows = lines.slice(1, trailerIdx);
 	const channels = axes.map(() => new Float64Array(rows.length));
 	for (let r = 0; r < rows.length; r++) {
 		const cols = rows[r].split(",");

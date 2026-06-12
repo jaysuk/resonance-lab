@@ -102,3 +102,36 @@ describe("fixed excitation + orientation", () => {
 		expect(wrong.dominance).toBeGreaterThan(0.9);
 	});
 });
+
+describe("capture robustness (live-printer findings)", () => {
+	it("parses real-firmware trailer punctuation variants", async () => {
+		const { parseAccelCsv, hasCaptureTrailer } = await import("../src/capture/csv");
+		const base = "Sample,X,Y,Z\n0,0.1,0.2,0.98\n1,0.1,0.2,0.98\n";
+		for (const trailer of ["Rate 1342 overflows 0", "Rate: 1342, overflows: 2", "Rate,1342,overflows,1", "Sample rate 1342, overflows 0,,"]) {
+			const c = parseAccelCsv(base + trailer);
+			expect(c.samplingRate).toBe(1342);
+			expect(c.channels[0].length).toBe(2);
+			expect(hasCaptureTrailer(base + trailer)).toBe(true);
+		}
+		expect(hasCaptureTrailer(base)).toBe(false);
+	});
+
+	it("downloadCapture polls until the firmware finishes writing the file", async () => {
+		const { downloadCapture } = await import("../src/capture/orchestrator");
+		const full = "Sample,X\n0,0.1\n1,0.2\nRate 1000, overflows 0";
+		let attempt = 0;
+		const io = {
+			sendCode: async () => "ok",
+			upload: async () => {},
+			download: async () => {
+				attempt++;
+				if (attempt === 1) throw new Error("not found");
+				if (attempt === 2) return "Sample,X\n0,0.1"; // still being written
+				return full;
+			},
+		};
+		const text = await downloadCapture(io, { csvPath: "x.csv", program: { lines: [], pulses: 0, durationSec: 0, maxExcursion: 0 } }, 5000, 10);
+		expect(text).toBe(full);
+		expect(attempt).toBe(3);
+	});
+});

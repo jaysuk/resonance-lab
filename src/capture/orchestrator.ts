@@ -171,9 +171,33 @@ export async function runNativeCapture(io: MachineIO, options: NativeCaptureOpti
 	};
 }
 
-/** Download a finished capture's CSV text. */
-export function downloadCapture(io: MachineIO, run: CaptureRun): Promise<string> {
-	return io.download(run.csvPath);
+/**
+ * Download a capture's CSV, waiting for the firmware to finish writing it. M956 collects and
+ * flushes asynchronously - the G-code line completes before the file is closed, so an immediate
+ * download sees a missing or truncated file. Poll until the rate/overflows trailer appears.
+ */
+export async function downloadCapture(io: MachineIO, run: CaptureRun, timeoutMs = 30000, intervalMs = 750): Promise<string> {
+	const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+	const { hasCaptureTrailer } = await import("./csv");
+	const deadline = Date.now() + timeoutMs;
+	let lastText = "";
+	for (;;) {
+		try {
+			lastText = await io.download(run.csvPath);
+			if (hasCaptureTrailer(lastText)) {
+				return lastText;
+			}
+		} catch {
+			// File not created yet - keep waiting.
+		}
+		if (Date.now() >= deadline) {
+			if (lastText) {
+				return lastText; // let the parser produce its specific error
+			}
+			throw new Error(`Capture file did not appear within ${Math.round(timeoutMs / 1000)}s (${run.csvPath})`);
+		}
+		await sleep(intervalMs);
+	}
 }
 
 /** Run a fixed-frequency excitation capture (study a single suspicious peak). */
