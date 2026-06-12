@@ -87,6 +87,39 @@ export async function runSweepCapture(io: MachineIO, options: SweepCaptureOption
 	return { csvPath, program };
 }
 
+export interface BeltCaptureOptions {
+	accelerometer: AccelerometerRef;
+	/** Which belt of the CoreXY pair: "a" = X+Y diagonal, "b" = X-Y diagonal. */
+	belt: "a" | "b";
+	centerX: number;
+	centerY: number;
+	startFreq?: number;
+	endFreq?: number;
+	hzPerSec?: number;
+	maxAccel?: number;
+	expectedSampleRate?: number;
+}
+
+/** Run one belt's diagonal swept excitation; call twice (belt a, belt b) and compareBelts the CSVs. */
+export async function runBeltCapture(io: MachineIO, options: BeltCaptureOptions): Promise<CaptureRun> {
+	const program = generateSweep({
+		axis: "X",
+		center: options.centerX,
+		startFreq: options.startFreq,
+		endFreq: options.endFreq,
+		hzPerSec: options.hzPerSec,
+		maxAccel: options.maxAccel,
+		secondary: { axis: "Y", center: options.centerY, scale: options.belt === "a" ? 1 : -1 },
+	});
+	const name = captureName(`belt${options.belt}`, "xy");
+	const csvPath = `${CAPTURE_DIR}/${name}`;
+	await io.upload(SWEEP_PROGRAM_PATH, program.lines.join("\n") + "\n");
+	const rate = options.expectedSampleRate ?? 1000;
+	const samples = Math.min(200000, Math.ceil(program.durationSec * rate * 1.25));
+	await io.sendCode(`M400 M956 P${options.accelerometer.id} S${samples} A0 F"${name}" M98 P"${SWEEP_PROGRAM_PATH}"`);
+	return { csvPath, program };
+}
+
 export interface NativeCaptureOptions {
 	accelerometer: AccelerometerRef;
 	axis: string;

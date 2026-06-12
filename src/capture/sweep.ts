@@ -25,6 +25,11 @@ export interface SweepOptions {
 	maxAccel?: number;
 	/** Feedrate ceiling (mm/min) used for the G1 moves (kept high; accel limits the profile). */
 	maxFeedrate?: number;
+	/**
+	 * Second axis moved in lockstep for diagonal (belt) excitation: scale +1 excites one belt of a
+	 * CoreXY pair, -1 the other (the perpendicular diagonal).
+	 */
+	secondary?: { axis: string; center: number; scale: number };
 }
 
 export interface SweepProgram {
@@ -80,8 +85,11 @@ export function generateSweep(options: SweepOptions): SweepProgram {
 			lastAccel = accel;
 		}
 		const target = options.center + dir * d;
-		lines.push(`G1 ${axis}${round3(target)} F${maxFeedrate}`);
-		lines.push(`G1 ${axis}${round3(options.center)} F${maxFeedrate}`);
+		const sec = options.secondary;
+		const secOut = sec ? ` ${sec.axis.toUpperCase()}${round3(sec.center + dir * d * sec.scale)}` : "";
+		const secHome = sec ? ` ${sec.axis.toUpperCase()}${round3(sec.center)}` : "";
+		lines.push(`G1 ${axis}${round3(target)}${secOut} F${maxFeedrate}`);
+		lines.push(`G1 ${axis}${round3(options.center)}${secHome} F${maxFeedrate}`);
 		dir = -dir;
 		pulses++;
 		durationSec += 4 * tSeg; // out + back, each a 2-segment triangular profile
@@ -89,7 +97,8 @@ export function generateSweep(options: SweepOptions): SweepProgram {
 	}
 
 	lines.push("M400");
-	lines.push(`G1 ${axis}${round3(options.center)} F${maxFeedrate}`);
+	const endHome = options.secondary ? ` ${options.secondary.axis.toUpperCase()}${round3(options.secondary.center)}` : "";
+	lines.push(`G1 ${axis}${round3(options.center)}${endHome} F${maxFeedrate}`);
 	return { lines, pulses, durationSec, maxExcursion };
 }
 
