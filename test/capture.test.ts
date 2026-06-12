@@ -135,3 +135,26 @@ describe("capture robustness (live-printer findings)", () => {
 		expect(attempt).toBe(3);
 	});
 });
+
+describe("orientation solver (3.6-prototype algorithm)", () => {
+	it("solves a rotated chip and emits the M955 I parameter", async () => {
+		const { solveOrientation } = await import("../src/analysis/axesMap");
+		// Chip Y carried the machine-X burst (negative), gravity on chip Z pointing up.
+		const sol = solveOrientation(
+			{ X: { channel: "Y", sign: -1, coupling: 0.2, dc: [0, 0, 0.99] }, Y: { channel: "X", sign: 1, coupling: 0.2, dc: [0, 0, 0.99] } },
+			{ channel: "Z", sign: 1 },
+		);
+		expect(sol.faces.Y).toEqual({ axis: "X", sign: -1 });
+		expect(sol.faces.Z).toEqual({ axis: "Z", sign: 1 });
+		// I = digit(chipZ=+Z -> 2) then digit(chipX=+Y -> 1)
+		expect(sol.iParam).toBe("21");
+		expect(sol.conflicts).toEqual([]);
+	});
+
+	it("flags conflicts when both moves hit the same channel", async () => {
+		const { solveOrientation } = await import("../src/analysis/axesMap");
+		const r = { channel: "X", sign: 1 as const, coupling: 0.9, dc: [0, 0, -1] };
+		const sol = solveOrientation({ X: r, Y: { ...r } }, { channel: "Z", sign: -1 });
+		expect(sol.conflicts).toEqual(["Y"]);
+	});
+});

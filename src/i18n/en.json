@@ -38,9 +38,12 @@
 		"axescheck": "Accelerometer orientation check"
 	},
 	"orientation": {
-		"ok": "Orientation looks correct — {axis}-axis motion shows on the {axis} channel ({dominance}% of energy)",
-		"wrong": "Orientation problem: {axis}-axis motion shows mostly on the {dominant} channel",
-		"detail": "If the dominant channel doesn't match the moved axis, fix the M955 I (orientation) parameter before trusting any per-axis analysis."
+		"suggest": "Suggested orientation:",
+		"underdetermined": "Couldn't fully determine the orientation — ensure the X and Y moves actually moved the toolhead and re-run.",
+		"conflict": "The {axes} move excited the same sensor channel as another axis — frame coupling (bedslinger?) or loose mounting.",
+		"coupling": "High cross-axis coupling ({pct}%) — check the accelerometer is rigidly mounted.",
+		"apply": "Apply M955",
+		"applied": "Orientation applied (I{i}). Add the M955 I parameter to config.g to keep it."
 	},
 	"belts": {
 		"notCoreXY": "Belt comparison needs CoreXY-style kinematics (diagonal belt paths). Your machine reports a different kinematics type.",

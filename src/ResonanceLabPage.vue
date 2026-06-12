@@ -145,19 +145,31 @@
 		</template>
 
 		<!-- Accelerometer orientation check result -->
-		<v-card v-else-if="orientationResult" variant="tonal" :color="orientationResult.ok ? 'success' : 'error'" class="mb-3">
-			<v-card-text class="d-flex align-center ga-3 py-3">
-				<v-icon size="large">{{ orientationResult.ok ? "mdi-axis-arrow-info" : "mdi-axis-arrow-lock" }}</v-icon>
-				<div>
-					<div class="text-subtitle-1 font-weight-medium">
-						{{ orientationResult.ok
-							? $t("plugins.resonanceLab.orientation.ok", { axis: selectedAxis, dominance: (orientationResult.dominance * 100).toFixed(0) })
-							: $t("plugins.resonanceLab.orientation.wrong", { axis: selectedAxis, dominant: orientationResult.dominant }) }}
+		<template v-else-if="orientationResult">
+			<v-card variant="tonal" :color="orientationResult.solution.iParam ? 'success' : 'warning'" class="mb-3">
+				<v-card-text class="d-flex align-center flex-wrap ga-3 py-3">
+					<v-icon size="large">{{ orientationResult.solution.iParam ? "mdi-axis-arrow-info" : "mdi-axis-arrow-lock" }}</v-icon>
+					<div class="flex-grow-1">
+						<div class="text-subtitle-1 font-weight-medium">{{ orientationResult.solution.summary.join(" · ") }}</div>
+						<div v-if="orientationResult.solution.iParam" class="text-body-2">
+							{{ $t("plugins.resonanceLab.orientation.suggest") }}
+							<code>M955 P{{ orientationResult.accelId }} I{{ orientationResult.solution.iParam }}</code>
+						</div>
+						<div v-else class="text-body-2">{{ $t("plugins.resonanceLab.orientation.underdetermined") }}</div>
+						<div v-if="orientationResult.solution.conflicts.length" class="text-caption text-warning">
+							{{ $t("plugins.resonanceLab.orientation.conflict", { axes: orientationResult.solution.conflicts.join(", ") }) }}
+						</div>
+						<div v-if="orientationResult.coupling > 0.6" class="text-caption text-warning">
+							{{ $t("plugins.resonanceLab.orientation.coupling", { pct: (orientationResult.coupling * 100).toFixed(0) }) }}
+						</div>
 					</div>
-					<div class="text-body-2">{{ $t("plugins.resonanceLab.orientation.detail") }}</div>
-				</div>
-			</v-card-text>
-		</v-card>
+					<v-btn v-if="orientationResult.solution.iParam" color="primary" prepend-icon="mdi-check" :disabled="!isConnected"
+						   @click="applyOrientation">
+						{{ $t("plugins.resonanceLab.orientation.apply") }}
+					</v-btn>
+				</v-card-text>
+			</v-card>
+		</template>
 
 		<!-- Belt comparison result -->
 		<template v-else-if="beltResult && beltVerdict && beltChart">
@@ -212,7 +224,7 @@ import i18n from "@/i18n";
 import { buildReport, downloadReport } from "dwc-plugin-runtime";
 
 import { compareBelts } from "./analysis/belts";
-import { checkOrientation, type OrientationCheck } from "./analysis/orientation";
+import { analyzeAxisBurst, detectVerticalAxis, solveOrientation, type OrientationSolution } from "./analysis/axesMap";
 import { analyseCapture } from "./analysis/pipeline";
 import { SHAPER_DISPLAY_NAMES, type ShaperName } from "./analysis/shapers";
 import { buildVibrationProfile } from "./analysis/vibration";
@@ -321,8 +333,17 @@ async function measure(): Promise<void> {
 			});
 			finish(parse(await downloadCapture(io, run)), `${selectedAxis.value} · ${adv.value.startFreq} Hz`);
 		} else if (method.value === "axescheck") {
-			const run = await runNativeCapture(io, { accelerometer: accel, axis: selectedAxis.value, center: axisCenter() });
-			orientationResult.value = checkOrientation(parseAccelCsv(await downloadCapture(io, run)), selectedAxis.value);
+			// One sharp move per horizontal axis; gravity (pre-motion DC) pins the vertical.
+			const moveResults: Partial<Record<"X" | "Y", ReturnType<typeof analyzeAxisBurst>>> = {};
+			let firstCapture: ReturnType<typeof parseAccelCsv> | null = null;
+			for (const ax of ["X", "Y"] as const) {
+				const run = await runNativeCapture(io, { accelerometer: accel, axis: ax, center: centerOf(ax), span: 20 });
+				const capture = parseAccelCsv(await downloadCapture(io, run));
+				firstCapture = firstCapture ?? capture;
+				moveResults[ax] = analyzeAxisBurst(capture);
+			}
+			const gravity = detectVerticalAxis(firstCapture!, moveResults.X!.dc);
+			orientationResult.value = { solution: solveOrientation(moveResults, gravity), accelId: accel.id, coupling: Math.max(moveResults.X!.coupling, moveResults.Y!.coupling) };
 			lastResult.value = null;
 		} else if (method.value === "belts") {
 			const opts = { accelerometer: accel, centerX: centerOf("X"), centerY: centerOf("Y"), startFreq: adv.value.startFreq, endFreq: adv.value.endFreq, hzPerSec: adv.value.hzPerSec };
@@ -359,7 +380,7 @@ async function measure(): Promise<void> {
 }
 
 // ── Verify loop & orientation ────────────────────────────────────────────────
-const orientationResult = ref<OrientationCheck | null>(null);
+const orientationResult = ref<{ solution: OrientationSolution; accelId: string; coupling: number } | null>(null);
 const verifyResult = ref<{ reduction: number; before: { labels: Array<number>; data: Array<number> }; after: Array<number> } | null>(null);
 const appliedFit = ref<{ name: ShaperName; freq: number } | null>(null);
 
@@ -557,6 +578,15 @@ function downloadDiagnostics(): void {
 				: null,
 		} : undefined,
 	}));
+}
+
+async function applyOrientation(): Promise<void> {
+	const o = orientationResult.value;
+	if (!o?.solution.iParam) {
+		return;
+	}
+	await machineStore.sendCode(`M955 P${o.accelId} I${o.solution.iParam}`);
+	uiStore.makeNotification(LogLevel.success, "Resonance Lab", t("orientation.applied", { i: o.solution.iParam }));
 }
 
 async function applyShaper(): Promise<void> {

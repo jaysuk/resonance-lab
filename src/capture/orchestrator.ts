@@ -162,9 +162,10 @@ export async function runNativeCapture(io: MachineIO, options: NativeCaptureOpti
 		`G1 ${axis}${options.center + span} F${feedrate}`,
 		`G1 ${axis}${options.center} F${feedrate}`,
 	];
-	// Move to the start, then arm and execute the profile in one line so recording brackets it.
+	// Move to the start, then arm, dwell (clean pre-motion samples for gravity/noise floors), and
+	// execute the profile in one line so recording brackets it.
 	await sendChecked(io, `G1 ${axis}${options.center - span} F${feedrate} M400`);
-	await sendChecked(io, `M956 P${options.accelerometer.id} S${samples} A0 F"${name}" ${moves.join(" ")} M400`);
+	await sendChecked(io, `M956 P${options.accelerometer.id} S${samples} A0 F"${name}" G4 P300 ${moves.join(" ")} M400`);
 	return {
 		csvPath,
 		program: { lines: moves, pulses: moves.length, durationSec: 0, maxExcursion: span },
