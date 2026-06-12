@@ -44,6 +44,15 @@ export function findAccelerometers(model: unknown): Array<AccelerometerRef> {
 	return found;
 }
 
+
+/** Send a code and fail loudly if the firmware replied with an error (sendCode resolves either way). */
+async function sendChecked(io: MachineIO, code: string): Promise<void> {
+	const reply = await io.sendCode(code);
+	if (/^Error:/im.test(reply)) {
+		throw new Error(reply.trim());
+	}
+}
+
 export const SWEEP_PROGRAM_PATH = "0:/sys/resonanceLab-sweep.g";
 export const CAPTURE_DIR = "0:/sys/accelerometer";
 
@@ -85,7 +94,7 @@ export async function runSweepCapture(io: MachineIO, options: SweepCaptureOption
 
 	// M400 drains motion, M956 arms the recorder (A0 = start now, F names the file), M98 runs the
 	// program; sendCode resolves when the whole line - including the macro - has completed.
-	await io.sendCode(`M400 M956 P${options.accelerometer.id} S${samples} A0 F"${name}" M98 P"${SWEEP_PROGRAM_PATH}"`);
+	await sendChecked(io, `M400 M956 P${options.accelerometer.id} S${samples} A0 F"${name}" M98 P"${SWEEP_PROGRAM_PATH}"`);
 	return { csvPath, program };
 }
 
@@ -118,7 +127,7 @@ export async function runBeltCapture(io: MachineIO, options: BeltCaptureOptions)
 	await io.upload(SWEEP_PROGRAM_PATH, program.lines.join("\n") + "\n");
 	const rate = options.expectedSampleRate ?? 1000;
 	const samples = Math.min(200000, Math.ceil(program.durationSec * rate * 1.25));
-	await io.sendCode(`M400 M956 P${options.accelerometer.id} S${samples} A0 F"${name}" M98 P"${SWEEP_PROGRAM_PATH}"`);
+	await sendChecked(io, `M400 M956 P${options.accelerometer.id} S${samples} A0 F"${name}" M98 P"${SWEEP_PROGRAM_PATH}"`);
 	return { csvPath, program };
 }
 
@@ -154,8 +163,8 @@ export async function runNativeCapture(io: MachineIO, options: NativeCaptureOpti
 		`G1 ${axis}${options.center} F${feedrate}`,
 	];
 	// Move to the start, then arm and execute the profile in one line so recording brackets it.
-	await io.sendCode(`G1 ${axis}${options.center - span} F${feedrate} M400`);
-	await io.sendCode(`M956 P${options.accelerometer.id} S${samples} A0 F"${name}" ${moves.join(" ")} M400`);
+	await sendChecked(io, `G1 ${axis}${options.center - span} F${feedrate} M400`);
+	await sendChecked(io, `M956 P${options.accelerometer.id} S${samples} A0 F"${name}" ${moves.join(" ")} M400`);
 	return {
 		csvPath,
 		program: { lines: moves, pulses: moves.length, durationSec: 0, maxExcursion: span },
@@ -175,7 +184,7 @@ export async function runFixedExcitation(io: MachineIO, options: SweepCaptureOpt
 	await io.upload(SWEEP_PROGRAM_PATH, program.lines.join("\n") + "\n");
 	const rate = options.expectedSampleRate ?? 1000;
 	const samples = Math.min(200000, Math.ceil(program.durationSec * rate * 1.25));
-	await io.sendCode(`M400 M956 P${options.accelerometer.id} S${samples} A0 F"${name}" M98 P"${SWEEP_PROGRAM_PATH}"`);
+	await sendChecked(io, `M400 M956 P${options.accelerometer.id} S${samples} A0 F"${name}" M98 P"${SWEEP_PROGRAM_PATH}"`);
 	return { csvPath, program };
 }
 
@@ -203,8 +212,8 @@ export async function runSpeedPointCapture(io: MachineIO, options: SpeedPointCap
 	const rate = options.expectedSampleRate ?? 1000;
 	// Out + back at constant speed, plus margin for accel/decel phases.
 	const samples = Math.min(200000, Math.ceil(((4 * span) / options.speed) * rate * 1.3));
-	await io.sendCode(`G1 ${axis}${options.center - span} F30000 M400`);
-	await io.sendCode(
+	await sendChecked(io, `G1 ${axis}${options.center - span} F30000 M400`);
+	await sendChecked(io, 
 		`M956 P${options.accelerometer.id} S${samples} A0 F"${name}" `
 		+ `G1 ${axis}${options.center + span} F${f} G1 ${axis}${options.center - span} F${f} M400`,
 	);
