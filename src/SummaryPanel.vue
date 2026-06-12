@@ -13,15 +13,27 @@
 		</v-card-title>
 
 		<v-card-text class="flex-grow-1 d-flex flex-column justify-center py-2">
-			<div class="d-flex align-center">
-				<v-icon size="small" class="me-2" :color="ready ? 'success' : 'warning'">
-					{{ ready ? "mdi-check-circle-outline" : "mdi-alert-circle-outline" }}
-				</v-icon>
-				<span class="text-body-2">
-					{{ ready ? $t("plugins.resonanceLab.panel.ready") : $t("plugins.resonanceLab.panel.notReady") }}
-				</span>
-			</div>
-			<div class="text-caption text-medium-emphasis mt-2">{{ $t("plugins.resonanceLab.panel.noData") }}</div>
+			<template v-if="last && last.analysis.recommendation">
+				<div class="text-h6 font-weight-medium">
+					{{ $t("plugins.resonanceLab.panel.lastResult", {
+						shaper: displayName(last.analysis.recommendation.best.name),
+						freq: last.analysis.recommendation.best.freq.toFixed(1),
+						axis: last.axis,
+					}) }}
+				</div>
+				<div class="text-caption text-medium-emphasis mt-1">{{ last.when.toLocaleTimeString() }}</div>
+			</template>
+			<template v-else>
+				<div class="d-flex align-center">
+					<v-icon size="small" class="me-2" :color="ready ? 'success' : 'warning'">
+						{{ ready ? "mdi-check-circle-outline" : "mdi-alert-circle-outline" }}
+					</v-icon>
+					<span class="text-body-2">
+						{{ ready ? $t("plugins.resonanceLab.panel.ready") : $t("plugins.resonanceLab.panel.notReady") }}
+					</span>
+				</div>
+				<div class="text-caption text-medium-emphasis mt-2">{{ $t("plugins.resonanceLab.panel.noData") }}</div>
+			</template>
 		</v-card-text>
 
 		<v-card-actions class="pt-0">
@@ -37,7 +49,12 @@ import { computed } from "vue";
 
 import { useMachineStore } from "@/stores/machine";
 
+import { SHAPER_DISPLAY_NAMES, type ShaperName } from "./analysis/shapers";
+import { lastResult } from "./state";
+
 const machineStore = useMachineStore();
+const last = lastResult;
+const displayName = (n: ShaperName) => SHAPER_DISPLAY_NAMES[n];
 
 // Ready = connected with at least one accelerometer configured (M955) in the object model.
 const ready = computed(() => {

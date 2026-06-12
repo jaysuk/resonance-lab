@@ -1,33 +1,45 @@
 {
 	"menuCaption": "Resonance Lab",
 	"title": "Resonance Lab",
-	"subtitle": "Input shaping & resonance analysis — measure, analyse, recommend, verify.",
 	"notConnected": "Connect to your machine to check for an accelerometer.",
-	"accelFound": "Accelerometer ready on: {boards}.",
 	"accelMissing": "No accelerometer found in the object model. Configure one with M955 to run measurements.",
-	"comingSoon": "Coming soon",
-	"stages": {
-		"measure": {
-			"title": "Measure",
-			"description": "Run controlled excitation moves and capture accelerometer samples per axis / belt."
-		},
-		"analyse": {
-			"title": "Analyse",
-			"description": "Compute power spectral density, find resonance peaks, compare belts and detect anomalies."
-		},
-		"recommend": {
-			"title": "Recommend",
-			"description": "Suggest the best input-shaper type and frequency with predicted smoothing and remaining vibration."
-		},
-		"verify": {
-			"title": "Verify",
-			"description": "Re-measure with the shaper applied and confirm ringing is gone before saving to config."
-		}
+	"measuring": "Measuring the {axis} axis — the machine will oscillate. Keep clear until it finishes.",
+	"overflows": "The accelerometer reported {count} sample overflow(s) — results may be unreliable. Try a lower sample rate (M955) or a shorter run.",
+	"emptyState": "No measurement yet",
+	"emptyHint": "Pick an accelerometer, axis and method above, then press Measure — or load a previous capture CSV.",
+	"controls": {
+		"accelerometer": "Accelerometer",
+		"axis": "Axis",
+		"method": "Method",
+		"measure": "Measure",
+		"advanced": "Advanced options",
+		"advancedHint": "Defaults suit almost every machine. The frequency sweep covers the whole band in one run.",
+		"maxSmoothing": "Max smoothing (mm)",
+		"customMoves": "Custom move profile (one G-code per line)",
+		"loadCsv": "Load CSV"
+	},
+	"methods": {
+		"sweep": "Frequency sweep (recommended)",
+		"move": "Quick test move",
+		"custom": "Custom profile (advanced)"
+	},
+	"results": {
+		"headline": "Apply {shaper} @ {freq} Hz — removes ~{reduction}% of ringing",
+		"detail": "Estimated smoothing {smoothing} mm · keep acceleration below {accel} mm/s² · main resonance at {peak} Hz",
+		"quiet": "No significant resonance detected",
+		"quietDetail": "This capture shows no ringing worth shaping — either the machine is already well behaved, or the test didn't excite it. Try the frequency sweep method.",
+		"compare": "Compare shapers",
+		"apply": "Apply {shaper}",
+		"applied": "{shaper} @ {freq} Hz applied (M593). Add it to config.g to keep it after restarts.",
+		"source": "Source: {source}",
+		"samples": "{count} samples @ {rate} Hz",
+		"peak": "peak {freq} Hz"
 	},
 	"panel": {
 		"ready": "Accelerometer ready",
 		"notReady": "No accelerometer detected",
 		"noData": "No measurements yet — open the lab to run one.",
+		"lastResult": "{shaper} @ {freq} Hz · {axis} axis",
 		"open": "Open Resonance Lab"
 	},
 	"embeddable": {

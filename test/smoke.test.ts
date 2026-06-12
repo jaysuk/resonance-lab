@@ -16,12 +16,12 @@ describe("Resonance Lab smoke", () => {
 		wrapper.unmount();
 	});
 
-	it("detects a configured accelerometer from the object model", () => {
+	it("shows the ready empty state when an accelerometer is configured", () => {
 		setConnected(true);
 		setModel(loadObjectModel({ boards: [{ shortName: "MB6HC", accelerometer: { points: 0, runs: 0 } }] }));
 		const wrapper = mountInDwc(ResonanceLabPage);
-		expect(wrapper.text()).toContain("resonanceLab.accelFound");
 		expect(wrapper.text()).not.toContain("resonanceLab.accelMissing");
+		expect(wrapper.text()).toContain("resonanceLab.emptyState");
 		wrapper.unmount();
 	});
 

@@ -14,6 +14,7 @@
     "changelog": "node scripts/changelog.mjs"
   },
   "dependencies": {
+    "chart.js": "^4.5.1",
     "dwc-plugin-runtime": "github:jaysuk/dwc-plugin-runtime#v0.4.0"
   },
   "devDependencies": {
