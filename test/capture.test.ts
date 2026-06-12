@@ -69,3 +69,36 @@ describe("generateSweep", () => {
 		expect(() => generateSweep({ axis: "X", center: 0, startFreq: 50, endFreq: 20 })).toThrow();
 	});
 });
+
+describe("fixed excitation + orientation", () => {
+	it("fixed excitation holds one frequency and can keep the shaper active", async () => {
+		const { generateFixedExcitation } = await import("../src/capture/sweep");
+		const p = generateFixedExcitation({ axis: "X", center: 100, freq: 40, seconds: 5 });
+		expect(p.lines.some((l) => l.includes('M593 P"none"'))).toBe(true);
+		expect(p.durationSec).toBeGreaterThan(4.9);
+		const verify = generateFixedExcitation({ axis: "X", center: 100, freq: 40, seconds: 5, keepShaper: true });
+		expect(verify.lines.some((l) => l.includes('M593 P"none"'))).toBe(false);
+	});
+
+	it("sweep keepShaper leaves the shaper active for the verify run", async () => {
+		const { generateSweep } = await import("../src/capture/sweep");
+		const p = generateSweep({ axis: "X", center: 100, startFreq: 5, endFreq: 10, keepShaper: true });
+		expect(p.lines.some((l) => l.includes('M593 P"none"'))).toBe(false);
+	});
+
+	it("orientation check finds the dominant channel", async () => {
+		const { checkOrientation } = await import("../src/analysis/orientation");
+		const { parseAccelCsv } = await import("../src/capture/csv");
+		const lines = ["Sample,X,Y,Z"];
+		for (let i = 0; i < 500; i++) {
+			lines.push(`${i},${(0.02 * Math.sin(i / 3)).toFixed(4)},${(2 * Math.sin(i / 5)).toFixed(4)},0.98`);
+		}
+		lines.push("Rate 1000 overflows 0");
+		const capture = parseAccelCsv(lines.join("\n"));
+		expect(checkOrientation(capture, "Y").ok).toBe(true);
+		const wrong = checkOrientation(capture, "X");
+		expect(wrong.ok).toBe(false);
+		expect(wrong.dominant).toBe("Y");
+		expect(wrong.dominance).toBeGreaterThan(0.9);
+	});
+});

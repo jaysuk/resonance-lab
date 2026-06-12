@@ -5,6 +5,7 @@
 	"accelMissing": "No accelerometer found in the object model. Configure one with M955 to run measurements.",
 	"measuring": "Measuring the {axis} axis — the machine will oscillate. Keep clear until it finishes.",
 	"overflows": "The accelerometer reported {count} sample overflow(s) — results may be unreliable. Try a lower sample rate (M955) or a shorter run.",
+	"notHomed": "Home all axes before measuring — the test shakes the machine and needs a known position.",
 	"emptyState": "No measurement yet",
 	"emptyHint": "Pick an accelerometer, axis and method above, then press Measure — or load a previous capture CSV.",
 	"controls": {
@@ -23,7 +24,14 @@
 		"move": "Quick test move",
 		"custom": "Custom profile (advanced)",
 		"belts": "Belt comparison (CoreXY)",
-		"profile": "Vibration profile (speed sweep)"
+		"profile": "Vibration profile (speed sweep)",
+		"excite": "Excite one frequency (diagnostic)",
+		"axescheck": "Accelerometer orientation check"
+	},
+	"orientation": {
+		"ok": "Orientation looks correct — {axis}-axis motion shows on the {axis} channel ({dominance}% of energy)",
+		"wrong": "Orientation problem: {axis}-axis motion shows mostly on the {dominant} channel",
+		"detail": "If the dominant channel doesn't match the moved axis, fix the M955 I (orientation) parameter before trusting any per-axis analysis."
 	},
 	"belts": {
 		"beltA": "Belt A (X+Y)",
@@ -50,6 +58,10 @@
 		"compare": "Compare shapers",
 		"apply": "Apply {shaper}",
 		"applied": "{shaper} @ {freq} Hz applied (M593). Add it to config.g to keep it after restarts.",
+		"verify": "Verify",
+		"verified": "Verified: {reduction}% of vibration energy removed with the shaper active.",
+		"before": "Before (no shaper)",
+		"after": "After (shaper active)",
 		"source": "Source: {source}",
 		"samples": "{count} samples @ {rate} Hz",
 		"peak": "peak {freq} Hz"

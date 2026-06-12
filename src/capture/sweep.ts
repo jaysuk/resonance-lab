@@ -30,6 +30,8 @@ export interface SweepOptions {
 	 * CoreXY pair, -1 the other (the perpendicular diagonal).
 	 */
 	secondary?: { axis: string; center: number; scale: number };
+	/** Keep the configured input shaper ACTIVE during the test (the verify run). Default: disable. */
+	keepShaper?: boolean;
 }
 
 export interface SweepProgram {
@@ -61,7 +63,9 @@ export function generateSweep(options: SweepOptions): SweepProgram {
 		"; Resonance Lab swept excitation",
 		`; axis ${axis}, ${startFreq}-${endFreq} Hz at ${hzPerSec} Hz/s, ${accelPerHz} mm/s^2 per Hz`,
 		"M400",
-		'M593 P"none" ; disable input shaping during the measurement',
+		options.keepShaper
+			? "; input shaper left ACTIVE (verify run)"
+			: 'M593 P"none" ; disable input shaping during the measurement',
 		`M204 P${preambleAccel} T${preambleAccel}`,
 	];
 
@@ -104,4 +108,38 @@ export function generateSweep(options: SweepOptions): SweepProgram {
 
 function round3(v: number): string {
 	return (Math.round(v * 1000) / 1000).toString();
+}
+
+/**
+ * Fixed-frequency excitation: hold one frequency for `seconds` to study a single suspicious peak
+ * (locate a rattling part by touch, or watch how a resonance behaves under sustained drive).
+ */
+export function generateFixedExcitation(options: SweepOptions & { freq: number; seconds?: number }): SweepProgram {
+	const axis = options.axis.toUpperCase();
+	const freq = options.freq;
+	const seconds = options.seconds ?? 10;
+	const accelPerHz = options.accelPerHz ?? 60;
+	const maxAccel = options.maxAccel ?? 10000;
+	const maxFeedrate = options.maxFeedrate ?? 30000;
+	if (!(freq > 0) || !(seconds > 0)) {
+		throw new Error("Invalid excitation parameters");
+	}
+	const tSeg = 0.25 / freq;
+	const accel = Math.min(accelPerHz * freq, maxAccel);
+	const d = accel * tSeg * tSeg;
+	const pulses = Math.ceil(seconds / (4 * tSeg));
+	const lines: Array<string> = [
+		`; Resonance Lab fixed excitation: ${freq} Hz for ${seconds}s on ${axis}`,
+		"M400",
+		options.keepShaper ? "; input shaper left ACTIVE" : 'M593 P"none" ; disable input shaping during the measurement',
+		`M204 P${accel.toFixed(0)} T${accel.toFixed(0)}`,
+	];
+	let dir = 1;
+	for (let i = 0; i < pulses; i++) {
+		lines.push(`G1 ${axis}${round3(options.center + dir * d)} F${maxFeedrate}`);
+		lines.push(`G1 ${axis}${round3(options.center)} F${maxFeedrate}`);
+		dir = -dir;
+	}
+	lines.push("M400");
+	return { lines, pulses, durationSec: pulses * 4 * tSeg, maxExcursion: d };
 }

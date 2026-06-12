@@ -10,7 +10,7 @@
  *  - ADVANCED: the user supplies their own move profile (the native flow the stock plugin offers);
  *    we arm the recorder around it.
  */
-import { generateSweep, type SweepOptions, type SweepProgram } from "./sweep";
+import { generateFixedExcitation, generateSweep, type SweepOptions, type SweepProgram } from "./sweep";
 
 export interface MachineIO {
 	/** Send a G-code line and resolve when it has completed (DWC sendCode semantics). */
@@ -163,6 +163,18 @@ export async function runNativeCapture(io: MachineIO, options: NativeCaptureOpti
 /** Download a finished capture's CSV text. */
 export function downloadCapture(io: MachineIO, run: CaptureRun): Promise<string> {
 	return io.download(run.csvPath);
+}
+
+/** Run a fixed-frequency excitation capture (study a single suspicious peak). */
+export async function runFixedExcitation(io: MachineIO, options: SweepCaptureOptions & { freq: number; seconds?: number }): Promise<CaptureRun> {
+	const program = generateFixedExcitation(options);
+	const name = captureName(`fix${Math.round(options.freq)}`, options.axis);
+	const csvPath = `${CAPTURE_DIR}/${name}`;
+	await io.upload(SWEEP_PROGRAM_PATH, program.lines.join("\n") + "\n");
+	const rate = options.expectedSampleRate ?? 1000;
+	const samples = Math.min(200000, Math.ceil(program.durationSec * rate * 1.25));
+	await io.sendCode(`M400 M956 P${options.accelerometer.id} S${samples} A0 F"${name}" M98 P"${SWEEP_PROGRAM_PATH}"`);
+	return { csvPath, program };
 }
 
 export interface SpeedPointCaptureOptions {

@@ -83,11 +83,24 @@
 					<v-btn v-if="rec" color="primary" prepend-icon="mdi-check" :loading="applying" :disabled="!isConnected" @click="applyShaper">
 						{{ $t("plugins.resonanceLab.results.apply", { shaper: displayName(overlay) }) }}
 					</v-btn>
+					<v-btn v-if="appliedFit" variant="tonal" prepend-icon="mdi-check-decagram-outline" :loading="running" :disabled="!isConnected" @click="verify">
+						{{ $t("plugins.resonanceLab.results.verify") }}
+					</v-btn>
 				</v-card-text>
 			</v-card>
 
+			<v-alert v-if="verifyResult" :type="verifyResult.reduction > 0.5 ? 'success' : 'warning'" variant="tonal" density="comfortable" class="mb-2">
+				{{ $t("plugins.resonanceLab.results.verified", { reduction: (verifyResult.reduction * 100).toFixed(0) }) }}
+			</v-alert>
 			<div class="flex-grow-1" style="min-height: 320px">
-				<SpectrumChart :analysis="result.analysis" :overlay-shaper="overlay" />
+				<LineChart v-if="verifyResult"
+						   :labels="verifyResult.before.labels"
+						   :series="[
+						   	{ label: $t('plugins.resonanceLab.results.before'), data: verifyResult.before.data, color: '#2196f3' },
+						   	{ label: $t('plugins.resonanceLab.results.after'), data: verifyResult.after, color: '#4caf50' },
+						   ]"
+						   x-title="Frequency (Hz)" y-title="Vibration (normalised)" />
+				<SpectrumChart v-else :analysis="result.analysis" :overlay-shaper="overlay" />
 			</div>
 
 			<div class="d-flex align-center flex-wrap ga-4 mt-2 text-caption text-medium-emphasis">
@@ -98,6 +111,21 @@
 				</span>
 			</div>
 		</template>
+
+		<!-- Accelerometer orientation check result -->
+		<v-card v-else-if="orientationResult" variant="tonal" :color="orientationResult.ok ? 'success' : 'error'" class="mb-3">
+			<v-card-text class="d-flex align-center ga-3 py-3">
+				<v-icon size="large">{{ orientationResult.ok ? "mdi-axis-arrow-info" : "mdi-axis-arrow-lock" }}</v-icon>
+				<div>
+					<div class="text-subtitle-1 font-weight-medium">
+						{{ orientationResult.ok
+							? $t("plugins.resonanceLab.orientation.ok", { axis: selectedAxis, dominance: (orientationResult.dominance * 100).toFixed(0) })
+							: $t("plugins.resonanceLab.orientation.wrong", { axis: selectedAxis, dominant: orientationResult.dominant }) }}
+					</div>
+					<div class="text-body-2">{{ $t("plugins.resonanceLab.orientation.detail") }}</div>
+				</div>
+			</v-card-text>
+		</v-card>
 
 		<!-- Belt comparison result -->
 		<template v-else-if="beltResult && beltVerdict && beltChart">
@@ -150,13 +178,14 @@ import { LogLevel, useUiStore } from "@/stores/ui";
 import i18n from "@/i18n";
 
 import { compareBelts } from "./analysis/belts";
+import { checkOrientation, type OrientationCheck } from "./analysis/orientation";
 import { analyseCapture } from "./analysis/pipeline";
 import { SHAPER_DISPLAY_NAMES, type ShaperName } from "./analysis/shapers";
 import { buildVibrationProfile } from "./analysis/vibration";
 import { parseAccelCsv } from "./capture/csv";
 import {
-	downloadCapture, findAccelerometers, runBeltCapture, runNativeCapture, runSpeedPointCapture,
-	runSweepCapture, type MachineIO,
+	downloadCapture, findAccelerometers, runBeltCapture, runFixedExcitation, runNativeCapture,
+	runSpeedPointCapture, runSweepCapture, type MachineIO,
 } from "./capture/orchestrator";
 import LineChart from "./components/LineChart.vue";
 import SpectrumChart from "./components/SpectrumChart.vue";
@@ -182,13 +211,15 @@ const axisItems = computed(() => {
 	return letters.length > 0 ? letters : ["X", "Y"];
 });
 const selectedAxis = ref("X");
-const method = ref<"sweep" | "move" | "custom" | "belts" | "profile">("sweep");
+const method = ref<"sweep" | "move" | "custom" | "belts" | "profile" | "excite" | "axescheck">("sweep");
 const methodItems = computed(() => [
 	{ title: t("methods.sweep"), value: "sweep" },
 	{ title: t("methods.move"), value: "move" },
 	{ title: t("methods.custom"), value: "custom" },
 	{ title: t("methods.belts"), value: "belts" },
 	{ title: t("methods.profile"), value: "profile" },
+	{ title: t("methods.excite"), value: "excite" },
+	{ title: t("methods.axescheck"), value: "axescheck" },
 ]);
 const adv = ref({ startFreq: 5, endFreq: 135, hzPerSec: 1, maxSmoothing: 0, customMoves: "" });
 
@@ -225,12 +256,30 @@ async function measure(): Promise<void> {
 	if (!accel) {
 		return;
 	}
+	// Guard: every visible axis must be homed before we shake the machine.
+	const axesModel = (machineStore.model as { move?: { axes?: Array<{ visible?: boolean; homed?: boolean }> } }).move?.axes ?? [];
+	if (axesModel.some((a) => a.visible !== false && a.homed === false)) {
+		error.value = t("notHomed");
+		return;
+	}
 	running.value = true;
 	error.value = "";
 	beltResult.value = null;
 	profileResult.value = null;
+	orientationResult.value = null;
+	verifyResult.value = null;
 	try {
-		if (method.value === "belts") {
+		if (method.value === "excite") {
+			const run = await runFixedExcitation(io, {
+				accelerometer: accel, axis: selectedAxis.value, center: axisCenter(),
+				freq: adv.value.startFreq, seconds: 10,
+			});
+			finish(parse(await downloadCapture(io, run)), `${selectedAxis.value} · ${adv.value.startFreq} Hz`);
+		} else if (method.value === "axescheck") {
+			const run = await runNativeCapture(io, { accelerometer: accel, axis: selectedAxis.value, center: axisCenter() });
+			orientationResult.value = checkOrientation(parseAccelCsv(await downloadCapture(io, run)), selectedAxis.value);
+			lastResult.value = null;
+		} else if (method.value === "belts") {
 			const opts = { accelerometer: accel, centerX: centerOf("X"), centerY: centerOf("Y"), startFreq: adv.value.startFreq, endFreq: adv.value.endFreq, hzPerSec: adv.value.hzPerSec };
 			const a = await downloadCapture(io, await runBeltCapture(io, { ...opts, belt: "a" }));
 			const b = await downloadCapture(io, await runBeltCapture(io, { ...opts, belt: "b" }));
@@ -264,6 +313,45 @@ async function measure(): Promise<void> {
 	}
 }
 
+// ── Verify loop & orientation ────────────────────────────────────────────────
+const orientationResult = ref<OrientationCheck | null>(null);
+const verifyResult = ref<{ reduction: number; before: { labels: Array<number>; data: Array<number> }; after: Array<number> } | null>(null);
+const appliedFit = ref<{ name: ShaperName; freq: number } | null>(null);
+
+/** Re-run the same sweep with the shaper ACTIVE and compare energy before/after. */
+async function verify(): Promise<void> {
+	const accel = selectedAccel.value ?? accelItems.value[0];
+	const before = result.value;
+	if (!accel || !before) {
+		return;
+	}
+	running.value = true;
+	error.value = "";
+	try {
+		const run = await runSweepCapture(io, {
+			accelerometer: accel, axis: before.axis, center: axisCenter(),
+			startFreq: adv.value.startFreq, endFreq: adv.value.endFreq, hzPerSec: adv.value.hzPerSec,
+			keepShaper: true,
+		});
+		const after = analyseCapture(parseAccelCsv(await downloadCapture(io, run)));
+		const eBefore = before.analysis.normalized.reduce((a, b) => a + b, 0);
+		const eAfter = after.normalized.reduce((a, b) => a + b, 0);
+		const labels: Array<number> = [];
+		const beforeData: Array<number> = [];
+		const afterData: Array<number> = [];
+		const maxFreq = 200;
+		for (let i = 0; i < before.analysis.spectrum.freqs.length && before.analysis.spectrum.freqs[i] <= maxFreq; i++) {
+			labels.push(Math.round(before.analysis.spectrum.freqs[i] * 10) / 10);
+			beforeData.push(before.analysis.normalized[i]);
+			afterData.push(after.normalized[i] ?? 0);
+		}
+		verifyResult.value = { reduction: eBefore > 0 ? 1 - eAfter / eBefore : 0, before: { labels, data: beforeData }, after: afterData };
+	} catch (e) {
+		error.value = (e as Error).message || String(e);
+	} finally {
+		running.value = false;
+	}
+}
 // ── Belt / profile presentation ──────────────────────────────────────────────
 const beltChart = computed(() => {
 	const r = beltResult.value;
@@ -381,6 +469,7 @@ async function applyShaper(): Promise<void> {
 	applying.value = true;
 	try {
 		await machineStore.sendCode(`M593 P"${fit.name}" F${fit.freq.toFixed(1)}`);
+		appliedFit.value = { name: fit.name, freq: fit.freq };
 		uiStore.makeNotification(LogLevel.success, "Resonance Lab", t("results.applied", { shaper: SHAPER_DISPLAY_NAMES[fit.name], freq: fit.freq.toFixed(1) }));
 	} catch (e) {
 		uiStore.makeNotification(LogLevel.error, "Resonance Lab", (e as Error).message || String(e));
