@@ -21,7 +21,26 @@
 	"methods": {
 		"sweep": "Frequency sweep (recommended)",
 		"move": "Quick test move",
-		"custom": "Custom profile (advanced)"
+		"custom": "Custom profile (advanced)",
+		"belts": "Belt comparison (CoreXY)",
+		"profile": "Vibration profile (speed sweep)"
+	},
+	"belts": {
+		"beltA": "Belt A (X+Y)",
+		"beltB": "Belt B (X−Y)",
+		"matched": "Belts are well matched ({sim}% similar)",
+		"matchedDetail": "Both belts resonate alike (peaks {peakA} / {peakB} Hz) with balanced energy — no tension adjustment needed.",
+		"tension": "Likely tension imbalance ({sim}% similar shape)",
+		"tensionDetail": "The spectra share a shape but {tighter} carries {ratio}× the vibration energy — adjust belt tension and re-run.",
+		"mismatch": "Belt paths behave differently ({sim}% similar)",
+		"mismatchDetail": "Different resonances ({peakA} vs {peakB} Hz) point at a mechanical difference — check pulleys, idlers and belt paths, not just tension."
+	},
+	"profile": {
+		"energy": "Vibration energy",
+		"clean": "No problem speeds found",
+		"cleanDetail": "Vibration stays near the baseline across the tested speed range.",
+		"problems": "Avoid printing at: {speeds}",
+		"problemsDetail": "These speeds excite a resonance (≥2× the baseline). Quietest tested speeds: {quiet}."
 	},
 	"results": {
 		"headline": "Apply {shaper} @ {freq} Hz — removes ~{reduction}% of ringing",

@@ -99,6 +99,40 @@
 			</div>
 		</template>
 
+		<!-- Belt comparison result -->
+		<template v-else-if="beltResult && beltVerdict && beltChart">
+			<v-card variant="tonal" :color="beltVerdict.color" class="mb-3">
+				<v-card-text class="d-flex align-center ga-3 py-3">
+					<v-icon size="large">{{ beltVerdict.icon }}</v-icon>
+					<div>
+						<div class="text-subtitle-1 font-weight-medium">{{ beltVerdict.headline }}</div>
+						<div class="text-body-2">{{ beltVerdict.detail }}</div>
+					</div>
+				</v-card-text>
+			</v-card>
+			<div class="flex-grow-1" style="min-height: 320px">
+				<LineChart :labels="beltChart.labels" :series="beltChart.series"
+						   x-title="Frequency (Hz)" y-title="Vibration" />
+			</div>
+		</template>
+
+		<!-- Vibration profile result -->
+		<template v-else-if="profileResult && profileVerdict && profileChart">
+			<v-card variant="tonal" :color="profileVerdict.color" class="mb-3">
+				<v-card-text class="d-flex align-center ga-3 py-3">
+					<v-icon size="large">{{ profileVerdict.icon }}</v-icon>
+					<div>
+						<div class="text-subtitle-1 font-weight-medium">{{ profileVerdict.headline }}</div>
+						<div class="text-body-2">{{ profileVerdict.detail }}</div>
+					</div>
+				</v-card-text>
+			</v-card>
+			<div class="flex-grow-1" style="min-height: 320px">
+				<LineChart :labels="profileChart.labels" :series="profileChart.series"
+						   x-title="Speed (mm/s)" y-title="Vibration energy" />
+			</div>
+		</template>
+
 		<!-- Empty state -->
 		<div v-else class="flex-grow-1 d-flex flex-column align-center justify-center text-medium-emphasis">
 			<v-icon size="64" class="mb-3">mdi-sine-wave</v-icon>
@@ -115,12 +149,18 @@ import { useMachineStore } from "@/stores/machine";
 import { LogLevel, useUiStore } from "@/stores/ui";
 import i18n from "@/i18n";
 
+import { compareBelts } from "./analysis/belts";
 import { analyseCapture } from "./analysis/pipeline";
 import { SHAPER_DISPLAY_NAMES, type ShaperName } from "./analysis/shapers";
+import { buildVibrationProfile } from "./analysis/vibration";
 import { parseAccelCsv } from "./capture/csv";
-import { downloadCapture, findAccelerometers, runNativeCapture, runSweepCapture, type MachineIO } from "./capture/orchestrator";
+import {
+	downloadCapture, findAccelerometers, runBeltCapture, runNativeCapture, runSpeedPointCapture,
+	runSweepCapture, type MachineIO,
+} from "./capture/orchestrator";
+import LineChart from "./components/LineChart.vue";
 import SpectrumChart from "./components/SpectrumChart.vue";
-import { lastResult, measurementRunning } from "./state";
+import { beltResult, lastResult, measurementRunning, profileResult } from "./state";
 
 const machineStore = useMachineStore();
 const uiStore = useUiStore();
@@ -142,11 +182,13 @@ const axisItems = computed(() => {
 	return letters.length > 0 ? letters : ["X", "Y"];
 });
 const selectedAxis = ref("X");
-const method = ref<"sweep" | "move" | "custom">("sweep");
+const method = ref<"sweep" | "move" | "custom" | "belts" | "profile">("sweep");
 const methodItems = computed(() => [
 	{ title: t("methods.sweep"), value: "sweep" },
 	{ title: t("methods.move"), value: "move" },
 	{ title: t("methods.custom"), value: "custom" },
+	{ title: t("methods.belts"), value: "belts" },
+	{ title: t("methods.profile"), value: "profile" },
 ]);
 const adv = ref({ startFreq: 5, endFreq: 135, hzPerSec: 1, maxSmoothing: 0, customMoves: "" });
 
@@ -170,6 +212,14 @@ function axisCenter(): number {
 	return ax?.userPosition ?? 0;
 }
 
+/** Centre of an arbitrary axis's travel (for the dual-axis belt test). */
+function centerOf(letter: string): number {
+	const axes = (machineStore.model as { move?: { axes?: Array<{ letter?: string; min?: number; max?: number }> } }).move?.axes ?? [];
+	const ax = axes.find((a) => a.letter === letter);
+	return ax && typeof ax.min === "number" && typeof ax.max === "number" && ax.max > ax.min
+		? Math.round((ax.min + ax.max) / 2) : 0;
+}
+
 async function measure(): Promise<void> {
 	const accel = selectedAccel.value ?? accelItems.value[0];
 	if (!accel) {
@@ -177,24 +227,98 @@ async function measure(): Promise<void> {
 	}
 	running.value = true;
 	error.value = "";
+	beltResult.value = null;
+	profileResult.value = null;
 	try {
-		const common = { accelerometer: accel, axis: selectedAxis.value, center: axisCenter() };
-		const run = method.value === "sweep"
-			? await runSweepCapture(io, { ...common, startFreq: adv.value.startFreq, endFreq: adv.value.endFreq, hzPerSec: adv.value.hzPerSec })
-			: await runNativeCapture(io, {
-				...common,
-				customMoves: method.value === "custom" && adv.value.customMoves.trim()
-					? adv.value.customMoves.split("\n").map((l) => l.trim()).filter(Boolean)
-					: undefined,
-			});
-		const csv = await downloadCapture(io, run);
-		finish(parse(csv), `${selectedAxis.value} · ${t(`methods.${method.value}`)}`);
+		if (method.value === "belts") {
+			const opts = { accelerometer: accel, centerX: centerOf("X"), centerY: centerOf("Y"), startFreq: adv.value.startFreq, endFreq: adv.value.endFreq, hzPerSec: adv.value.hzPerSec };
+			const a = await downloadCapture(io, await runBeltCapture(io, { ...opts, belt: "a" }));
+			const b = await downloadCapture(io, await runBeltCapture(io, { ...opts, belt: "b" }));
+			lastResult.value = null;
+			beltResult.value = compareBelts(parseAccelCsv(a), parseAccelCsv(b));
+		} else if (method.value === "profile") {
+			const entries: Array<{ speed: number; capture: ReturnType<typeof parseAccelCsv> }> = [];
+			for (let speed = 30; speed <= 180; speed += 30) {
+				const run = await runSpeedPointCapture(io, { accelerometer: accel, axis: selectedAxis.value, center: axisCenter(), speed });
+				entries.push({ speed, capture: parseAccelCsv(await downloadCapture(io, run)) });
+			}
+			lastResult.value = null;
+			profileResult.value = buildVibrationProfile(entries);
+		} else {
+			const common = { accelerometer: accel, axis: selectedAxis.value, center: axisCenter() };
+			const run = method.value === "sweep"
+				? await runSweepCapture(io, { ...common, startFreq: adv.value.startFreq, endFreq: adv.value.endFreq, hzPerSec: adv.value.hzPerSec })
+				: await runNativeCapture(io, {
+					...common,
+					customMoves: method.value === "custom" && adv.value.customMoves.trim()
+						? adv.value.customMoves.split("\n").map((l) => l.trim()).filter(Boolean)
+						: undefined,
+				});
+			const csv = await downloadCapture(io, run);
+			finish(parse(csv), `${selectedAxis.value} · ${t(`methods.${method.value}`)}`);
+		}
 	} catch (e) {
 		error.value = (e as Error).message || String(e);
 	} finally {
 		running.value = false;
 	}
 }
+
+// ── Belt / profile presentation ──────────────────────────────────────────────
+const beltChart = computed(() => {
+	const r = beltResult.value;
+	if (!r) {
+		return null;
+	}
+	return {
+		labels: Array.from(r.freqs).map((f) => Math.round(f * 10) / 10),
+		series: [
+			{ label: t("belts.beltA"), data: Array.from(r.psdA), color: "#2196f3" },
+			{ label: t("belts.beltB"), data: Array.from(r.psdB), color: "#ff9800" },
+		],
+	};
+});
+const beltVerdict = computed(() => {
+	const r = beltResult.value;
+	if (!r) {
+		return null;
+	}
+	const sim = (r.similarity * 100).toFixed(0);
+	if (r.verdict === "matched") {
+		return { color: "success", icon: "mdi-check-decagram", headline: t("belts.matched", { sim }), detail: t("belts.matchedDetail", { peakA: r.peakA.toFixed(1), peakB: r.peakB.toFixed(1) }) };
+	}
+	if (r.verdict === "tension") {
+		const tighter = r.energyRatio > 1 ? t("belts.beltB") : t("belts.beltA");
+		return { color: "warning", icon: "mdi-scale-unbalanced", headline: t("belts.tension", { sim }), detail: t("belts.tensionDetail", { tighter, ratio: (r.energyRatio > 1 ? r.energyRatio : 1 / r.energyRatio).toFixed(2) }) };
+	}
+	return { color: "error", icon: "mdi-alert-octagon-outline", headline: t("belts.mismatch", { sim }), detail: t("belts.mismatchDetail", { peakA: r.peakA.toFixed(1), peakB: r.peakB.toFixed(1) }) };
+});
+
+const profileChart = computed(() => {
+	const p = profileResult.value;
+	if (!p) {
+		return null;
+	}
+	return {
+		labels: p.points.map((pt) => pt.speed),
+		series: [{ label: t("profile.energy"), data: p.points.map((pt) => pt.energy), color: "#2196f3" }],
+	};
+});
+const profileVerdict = computed(() => {
+	const p = profileResult.value;
+	if (!p) {
+		return null;
+	}
+	if (p.problems.length === 0) {
+		return { color: "success", icon: "mdi-check-decagram", headline: t("profile.clean"), detail: t("profile.cleanDetail") };
+	}
+	return {
+		color: "warning",
+		icon: "mdi-speedometer",
+		headline: t("profile.problems", { speeds: p.problems.map((x) => `${x.speed} mm/s`).join(", ") }),
+		detail: t("profile.problemsDetail", { quiet: p.quietest.slice(0, 3).map((x) => `${x.speed} mm/s`).join(", ") }),
+	};
+});
 
 function parse(csvText: string) {
 	return analyseCapture(parseAccelCsv(csvText), {

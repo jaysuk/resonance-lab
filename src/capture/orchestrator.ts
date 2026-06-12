@@ -164,3 +164,35 @@ export async function runNativeCapture(io: MachineIO, options: NativeCaptureOpti
 export function downloadCapture(io: MachineIO, run: CaptureRun): Promise<string> {
 	return io.download(run.csvPath);
 }
+
+export interface SpeedPointCaptureOptions {
+	accelerometer: AccelerometerRef;
+	axis: string;
+	center: number;
+	/** Travel speed for this point (mm/s). */
+	speed: number;
+	/** Half-span of the constant-speed pass (mm). */
+	span?: number;
+	expectedSampleRate?: number;
+}
+
+/**
+ * Record one vibration-profile point: a constant-speed out-and-back pass on the axis at `speed`,
+ * recorded throughout. Call once per speed step and feed the CSVs to buildVibrationProfile.
+ */
+export async function runSpeedPointCapture(io: MachineIO, options: SpeedPointCaptureOptions): Promise<CaptureRun> {
+	const axis = options.axis.toUpperCase();
+	const span = options.span ?? 60;
+	const f = Math.max(60, Math.round(options.speed * 60)); // mm/s -> mm/min
+	const name = captureName(`speed${Math.round(options.speed)}`, options.axis);
+	const csvPath = `${CAPTURE_DIR}/${name}`;
+	const rate = options.expectedSampleRate ?? 1000;
+	// Out + back at constant speed, plus margin for accel/decel phases.
+	const samples = Math.min(200000, Math.ceil(((4 * span) / options.speed) * rate * 1.3));
+	await io.sendCode(`G1 ${axis}${options.center - span} F30000 M400`);
+	await io.sendCode(
+		`M956 P${options.accelerometer.id} S${samples} A0 F"${name}" `
+		+ `G1 ${axis}${options.center + span} F${f} G1 ${axis}${options.center - span} F${f} M400`,
+	);
+	return { csvPath, program: { lines: [], pulses: 2, durationSec: (4 * span) / options.speed, maxExcursion: span } };
+}

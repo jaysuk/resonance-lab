@@ -15,3 +15,9 @@ export interface SessionResult {
 
 export const lastResult = ref<SessionResult | null>(null);
 export const measurementRunning = ref(false);
+
+import type { BeltComparison } from "./analysis/belts";
+import type { VibrationProfile } from "./analysis/vibration";
+
+export const beltResult = ref<BeltComparison | null>(null);
+export const profileResult = ref<VibrationProfile | null>(null);
