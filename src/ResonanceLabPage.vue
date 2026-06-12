@@ -366,7 +366,14 @@ async function measure(): Promise<void> {
 			orientationResult.value = { solution: solveOrientation(moveResults, gravity), accelId: accel.id, coupling: Math.max(moveResults.X!.coupling, moveResults.Y!.coupling) };
 			lastResult.value = null;
 		} else if (method.value === "belts") {
-			const opts = { accelerometer: accel, centerX: centerOf("X"), centerY: centerOf("Y"), startFreq: adv.value.startFreq, endFreq: adv.value.endFreq, hzPerSec: adv.value.hzPerSec };
+			// Tension matching only needs the band belt resonances live in - a 15-95 Hz sweep at 2 Hz/s
+			// (~40s per belt) instead of the full calibration sweep (~130s). Advanced overrides win.
+			const opts = {
+				accelerometer: accel, centerX: centerOf("X"), centerY: centerOf("Y"),
+				startFreq: adv.value.startFreq !== 5 ? adv.value.startFreq : 15,
+				endFreq: adv.value.endFreq !== 135 ? adv.value.endFreq : 95,
+				hzPerSec: adv.value.hzPerSec !== 1 ? adv.value.hzPerSec : 2,
+			};
 			const runA = await runBeltCapture(io, { ...opts, belt: "a" });
 			const a = await downloadCapture(io, runA);
 			await waitForIdle((runA.program.durationSec + 60) * 1000);
