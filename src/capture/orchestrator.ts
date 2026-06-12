@@ -90,7 +90,7 @@ export async function runSweepCapture(io: MachineIO, options: SweepCaptureOption
 
 	// Size the capture to the program duration plus margin for the ring-down tail.
 	const rate = options.expectedSampleRate ?? 1000;
-	const samples = Math.min(200000, Math.ceil(program.durationSec * rate * 1.25));
+	const samples = Math.min(200000, Math.ceil((program.durationSec + 2) * rate));
 
 	// M400 drains motion, M956 arms the recorder (A0 = start now, F names the file), M98 runs the
 	// program; sendCode resolves when the whole line - including the macro - has completed.
@@ -126,7 +126,7 @@ export async function runBeltCapture(io: MachineIO, options: BeltCaptureOptions)
 	const csvPath = `${CAPTURE_DIR}/${name}`;
 	await io.upload(SWEEP_PROGRAM_PATH, program.lines.join("\n") + "\n");
 	const rate = options.expectedSampleRate ?? 1000;
-	const samples = Math.min(200000, Math.ceil(program.durationSec * rate * 1.25));
+	const samples = Math.min(200000, Math.ceil((program.durationSec + 2) * rate));
 	await sendChecked(io, `M400 M956 P${options.accelerometer.id} S${samples} A0 F"${name}" M98 P"${SWEEP_PROGRAM_PATH}"`);
 	return { csvPath, program };
 }
@@ -177,10 +177,13 @@ export async function runNativeCapture(io: MachineIO, options: NativeCaptureOpti
  * flushes asynchronously - the G-code line completes before the file is closed, so an immediate
  * download sees a missing or truncated file. Poll until the rate/overflows trailer appears.
  */
-export async function downloadCapture(io: MachineIO, run: CaptureRun, timeoutMs = 30000, intervalMs = 750): Promise<string> {
+export async function downloadCapture(io: MachineIO, run: CaptureRun, timeoutMs?: number, intervalMs = 750): Promise<string> {
+	// A sweep runs for program.durationSec and the file is only closed once sampling completes -
+	// the wait budget must scale with the test, not a fixed 30s (a 5-135 Hz sweep is ~130s).
+	const budget = timeoutMs ?? Math.max(30000, (run.program.durationSec + 30) * 1000 * 1.3);
 	const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 	const { hasCaptureTrailer } = await import("./csv");
-	const deadline = Date.now() + timeoutMs;
+	const deadline = Date.now() + budget;
 	let lastText = "";
 	for (;;) {
 		try {
@@ -195,7 +198,7 @@ export async function downloadCapture(io: MachineIO, run: CaptureRun, timeoutMs 
 			if (lastText) {
 				return lastText; // let the parser produce its specific error
 			}
-			throw new Error(`Capture file did not appear within ${Math.round(timeoutMs / 1000)}s (${run.csvPath})`);
+			throw new Error(`Capture file did not appear within ${Math.round(budget / 1000)}s (${run.csvPath})`);
 		}
 		await sleep(intervalMs);
 	}
@@ -208,7 +211,7 @@ export async function runFixedExcitation(io: MachineIO, options: SweepCaptureOpt
 	const csvPath = `${CAPTURE_DIR}/${name}`;
 	await io.upload(SWEEP_PROGRAM_PATH, program.lines.join("\n") + "\n");
 	const rate = options.expectedSampleRate ?? 1000;
-	const samples = Math.min(200000, Math.ceil(program.durationSec * rate * 1.25));
+	const samples = Math.min(200000, Math.ceil((program.durationSec + 2) * rate));
 	await sendChecked(io, `M400 M956 P${options.accelerometer.id} S${samples} A0 F"${name}" M98 P"${SWEEP_PROGRAM_PATH}"`);
 	return { csvPath, program };
 }
