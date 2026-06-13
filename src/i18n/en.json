@@ -91,5 +91,5 @@
 	"embeddable": {
 		"caption": "Resonance summary"
 	},
-	"stillBusy": "The machine is still moving from the previous run — wait for it to finish and try again."
+	"captureTimeout": "The accelerometer never reported a completed recording — check that it is configured and reachable, then try again."
 }

@@ -19,6 +19,15 @@ export interface MachineIO {
 	upload(path: string, content: string): Promise<void>;
 	/** Download a text file by full path. */
 	download(path: string): Promise<string>;
+	/**
+	 * Current value of the firmware's completed-sampling-run counter for this accelerometer
+	 * (object model `boards[].accelerometer.runs`). Read just BEFORE arming the recorder; the
+	 * firmware ticks it the instant it closes the CSV, which is the authoritative "done" signal.
+	 * Optional: when absent (e.g. unit tests), downloadCapture falls back to polling the file.
+	 */
+	accelRuns?(accelId: string): number;
+	/** Resolve once the run counter for `accelId` rises above `from`; reject after `timeoutMs`. */
+	awaitAccelRun?(accelId: string, from: number, timeoutMs: number): Promise<void>;
 }
 
 export interface AccelerometerRef {
@@ -75,6 +84,10 @@ export interface CaptureRun {
 	csvPath: string;
 	/** The generated program (for display: duration, pulse count, excursion). */
 	program: SweepProgram;
+	/** Accelerometer id (M956 P), kept so downloadCapture can watch its run counter. */
+	accelId?: string;
+	/** Run counter sampled just before arming; completion = counter rising above this. */
+	runsBefore?: number;
 }
 
 /** Capture file name: stable prefix + axis + timestamp, so runs never overwrite each other. */
@@ -101,9 +114,11 @@ export async function runSweepCapture(io: MachineIO, options: SweepCaptureOption
 	const samples = Math.min(200000, Math.ceil((program.durationSec + 2) * rate));
 
 	// M400 drains motion, M956 arms the recorder (A0 = start now, F names the file), M98 runs the
-	// program; sendCode resolves when the whole line - including the macro - has completed.
+	// program. sendCode resolving does NOT prove the recording finished (M956 flushes async), so
+	// snapshot the run counter first and let downloadCapture wait for it to tick.
+	const runsBefore = io.accelRuns?.(options.accelerometer.id);
 	await sendChecked(io, `M400 M956 P${options.accelerometer.id} S${samples} A0 F"${name}" M98 P"${progPath}"`);
-	return { csvPath, program };
+	return { csvPath, program, accelId: options.accelerometer.id, runsBefore };
 }
 
 export interface BeltCaptureOptions {
@@ -136,8 +151,9 @@ export async function runBeltCapture(io: MachineIO, options: BeltCaptureOptions)
 	await io.upload(progPath, program.lines.join("\n") + "\n");
 	const rate = options.expectedSampleRate ?? 1000;
 	const samples = Math.min(200000, Math.ceil((program.durationSec + 2) * rate));
+	const runsBefore = io.accelRuns?.(options.accelerometer.id);
 	await sendChecked(io, `M400 M956 P${options.accelerometer.id} S${samples} A0 F"${name}" M98 P"${progPath}"`);
-	return { csvPath, program };
+	return { csvPath, program, accelId: options.accelerometer.id, runsBefore };
 }
 
 export interface NativeCaptureOptions {
@@ -174,24 +190,62 @@ export async function runNativeCapture(io: MachineIO, options: NativeCaptureOpti
 	// Move to the start, then arm, dwell (clean pre-motion samples for gravity/noise floors), and
 	// execute the profile in one line so recording brackets it.
 	await sendChecked(io, `G1 ${axis}${options.center - span} F${feedrate} M400`);
+	const runsBefore = io.accelRuns?.(options.accelerometer.id);
 	await sendChecked(io, `M956 P${options.accelerometer.id} S${samples} A0 F"${name}" G4 P300 ${moves.join(" ")} M400`);
 	return {
 		csvPath,
 		program: { lines: moves, pulses: moves.length, durationSec: 0, maxExcursion: span },
+		accelId: options.accelerometer.id,
+		runsBefore,
 	};
 }
 
 /**
- * Download a capture's CSV, waiting for the firmware to finish writing it. M956 collects and
- * flushes asynchronously - the G-code line completes before the file is closed, so an immediate
- * download sees a missing or truncated file. Poll until the rate/overflows trailer appears.
+ * Download a capture's CSV once the firmware has finished writing it. M956 collects and flushes
+ * asynchronously, so the G-code line completes before the file is closed.
+ *
+ * Preferred signal: the object-model run counter (`boards[].accelerometer.runs`) ticks the instant
+ * the firmware closes the CSV - exact and duration-independent (this is how the stock Input Shaping
+ * plugin does it). We snapshot it before arming (run.runsBefore) and wait for it to rise. Fallback
+ * (no run-counter access, e.g. unit tests): poll the file until the rate/overflows trailer appears.
  */
 export async function downloadCapture(io: MachineIO, run: CaptureRun, timeoutMs?: number, intervalMs = 750): Promise<string> {
-	// A sweep runs for program.durationSec and the file is only closed once sampling completes -
-	// the wait budget must scale with the test, not a fixed 30s (a 5-135 Hz sweep is ~130s).
+	// The file is only closed once sampling completes, so the wait budget must scale with the test,
+	// not a fixed 30s (a 5-135 Hz sweep is ~130s). The counter wait makes this only a safety net.
 	const budget = timeoutMs ?? Math.max(30000, (run.program.durationSec + 30) * 1000 * 1.3);
 	const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 	const { hasCaptureTrailer } = await import("./csv");
+
+	if (io.awaitAccelRun && run.accelId !== undefined && typeof run.runsBefore === "number") {
+		let ticked = true;
+		try {
+			await io.awaitAccelRun(run.accelId, run.runsBefore, budget);
+		} catch {
+			// Counter never advanced (firmware error / disconnect / unhomed abort): fall through and
+			// make a best-effort read so the parser can surface the real problem.
+			ticked = false;
+		}
+		// Once the counter ticks the file is closed; a few quick reads cover filesystem visibility lag.
+		let lastText = "";
+		for (let attempt = 0; attempt < 6; attempt++) {
+			try {
+				lastText = await io.download(run.csvPath);
+				if (hasCaptureTrailer(lastText)) {
+					return lastText;
+				}
+			} catch {
+				// Not visible yet.
+			}
+			await sleep(200);
+		}
+		if (lastText) {
+			return lastText; // let the parser produce its specific error
+		}
+		throw new Error(ticked
+			? `Capture file never appeared after sampling completed (${run.csvPath})`
+			: `Capture did not complete within ${Math.round(budget / 1000)}s (${run.csvPath})`);
+	}
+
 	const deadline = Date.now() + budget;
 	let lastText = "";
 	for (;;) {
@@ -222,8 +276,9 @@ export async function runFixedExcitation(io: MachineIO, options: SweepCaptureOpt
 	await io.upload(progPath, program.lines.join("\n") + "\n");
 	const rate = options.expectedSampleRate ?? 1000;
 	const samples = Math.min(200000, Math.ceil((program.durationSec + 2) * rate));
+	const runsBefore = io.accelRuns?.(options.accelerometer.id);
 	await sendChecked(io, `M400 M956 P${options.accelerometer.id} S${samples} A0 F"${name}" M98 P"${progPath}"`);
-	return { csvPath, program };
+	return { csvPath, program, accelId: options.accelerometer.id, runsBefore };
 }
 
 export interface SpeedPointCaptureOptions {
@@ -251,9 +306,15 @@ export async function runSpeedPointCapture(io: MachineIO, options: SpeedPointCap
 	// Out + back at constant speed, plus margin for accel/decel phases.
 	const samples = Math.min(200000, Math.ceil(((4 * span) / options.speed) * rate * 1.3));
 	await sendChecked(io, `G1 ${axis}${options.center - span} F30000 M400`);
-	await sendChecked(io, 
+	const runsBefore = io.accelRuns?.(options.accelerometer.id);
+	await sendChecked(io,
 		`M956 P${options.accelerometer.id} S${samples} A0 F"${name}" `
 		+ `G1 ${axis}${options.center + span} F${f} G1 ${axis}${options.center - span} F${f} M400`,
 	);
-	return { csvPath, program: { lines: [], pulses: 2, durationSec: (4 * span) / options.speed, maxExcursion: span } };
+	return {
+		csvPath,
+		program: { lines: [], pulses: 2, durationSec: (4 * span) / options.speed, maxExcursion: span },
+		accelId: options.accelerometer.id,
+		runsBefore,
+	};
 }

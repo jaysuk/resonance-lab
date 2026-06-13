@@ -134,6 +134,53 @@ describe("capture robustness (live-printer findings)", () => {
 		expect(text).toBe(full);
 		expect(attempt).toBe(3);
 	});
+
+	it("captures snapshot the run counter before arming", async () => {
+		const { runSweepCapture } = await import("../src/capture/orchestrator");
+		const io = {
+			sendCode: async () => "ok",
+			upload: async () => {},
+			download: async () => "",
+			accelRuns: () => 3,
+		};
+		const run = await runSweepCapture(io, {
+			accelerometer: { id: "0", label: "MB" }, axis: "X", center: 100, startFreq: 5, endFreq: 10,
+		});
+		expect(run.accelId).toBe("0");
+		expect(run.runsBefore).toBe(3);
+	});
+
+	it("downloadCapture waits on the run counter when the IO exposes it (no file polling)", async () => {
+		const { downloadCapture } = await import("../src/capture/orchestrator");
+		const full = "Sample,X\n0,0.1\nRate 1000, overflows 0";
+		let runs = 5;
+		let fileReady = false;
+		const io = {
+			sendCode: async () => "ok",
+			upload: async () => {},
+			download: async () => { if (!fileReady) throw new Error("not found"); return full; },
+			accelRuns: () => runs,
+			// The firmware finishing = counter ticks and the CSV becomes readable.
+			awaitAccelRun: async (_id: string, from: number) => { runs = from + 1; fileReady = true; },
+		};
+		const run = { csvPath: "x.csv", program: { lines: [], pulses: 0, durationSec: 0, maxExcursion: 0 }, accelId: "0", runsBefore: 5 };
+		expect(await downloadCapture(io, run)).toBe(full);
+	});
+
+	it("downloadCapture still hands the file to the parser if the counter never ticks", async () => {
+		const { downloadCapture } = await import("../src/capture/orchestrator");
+		const partial = "Sample,X\n0,0.1"; // truncated: no rate/overflows trailer
+		const io = {
+			sendCode: async () => "ok",
+			upload: async () => {},
+			download: async () => partial,
+			accelRuns: () => 0,
+			awaitAccelRun: async () => { throw new Error("never completed"); },
+		};
+		const run = { csvPath: "x.csv", program: { lines: [], pulses: 0, durationSec: 0, maxExcursion: 0 }, accelId: "0", runsBefore: 0 };
+		// Returned (not thrown) so the CSV parser can surface its specific error.
+		expect(await downloadCapture(io, run, 100)).toBe(partial);
+	});
 });
 
 describe("orientation solver (3.6-prototype algorithm)", () => {

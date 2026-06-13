@@ -215,7 +215,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 
 import { useMachineStore } from "@/stores/machine";
 import { LogLevel, useUiStore } from "@/stores/ui";
@@ -279,10 +279,43 @@ const canMeasure = computed(() => isConnected.value && !running.value
 	&& (selectedAccel.value !== null || accelItems.value.length > 0));
 
 // ── Measurement ──────────────────────────────────────────────────────────────
+/**
+ * The firmware's completed-sampling-run counter for an accelerometer
+ * (`boards[].accelerometer.runs`). Ticks the instant the CSV is closed — the authoritative
+ * "recording done" signal. Accel ids are "<canAddress>.0" (CAN boards) or "0" (mainboard).
+ */
+function readAccelRuns(accelId: string): number {
+	const boardId = parseInt(accelId, 10) || 0;
+	const boards = (machineStore.model as { boards?: Array<{ canAddress?: number | null; accelerometer?: { runs?: number } | null } | null> }).boards ?? [];
+	const board = boards.find((b) => b && b.accelerometer && (b.canAddress ?? 0) === boardId);
+	return board?.accelerometer?.runs ?? 0;
+}
+
+/** Resolve when the run counter rises above `from` (watched on the object model); reject on timeout. */
+function awaitAccelRun(accelId: string, from: number, timeoutMs: number): Promise<void> {
+	return new Promise((resolve, reject) => {
+		// May have already ticked between arming and now — don't miss the edge.
+		if (readAccelRuns(accelId) > from) {
+			resolve();
+			return;
+		}
+		const stop = watch(() => readAccelRuns(accelId), (now) => {
+			if (now > from) {
+				cleanup();
+				resolve();
+			}
+		});
+		const timer = setTimeout(() => { cleanup(); reject(new Error(t("captureTimeout"))); }, timeoutMs);
+		function cleanup(): void { stop(); clearTimeout(timer); }
+	});
+}
+
 const io: MachineIO = {
 	sendCode: async (code) => String(await machineStore.sendCode(code) ?? ""),
 	upload: async (path, content) => { await machineStore.upload({ filename: path, content }, false, false, true); },
 	download: async (path) => String(await machineStore.download({ filename: path, type: "text" }, false, false, false)),
+	accelRuns: (accelId) => readAccelRuns(accelId),
+	awaitAccelRun: (accelId, from, timeoutMs) => awaitAccelRun(accelId, from, timeoutMs),
 };
 
 /** Centre of the selected axis's travel, from the object model (fallback: current position). */
@@ -301,25 +334,6 @@ function centerOf(letter: string): number {
 	const ax = axes.find((a) => a.letter === letter);
 	return ax && typeof ax.min === "number" && typeof ax.max === "number" && ax.max > ax.min
 		? Math.round((ax.min + ax.max) / 2) : 0;
-}
-
-/**
- * Wait until the machine reports idle. sendCode does not reliably block until a long M98 macro
- * completes (live-printer finding), so motion completion must be confirmed from the object model
- * before starting the next run or overwriting files.
- */
-async function waitForIdle(maxMs: number): Promise<void> {
-	const deadline = Date.now() + maxMs;
-	for (;;) {
-		const status = String((machineStore.model as { state?: { status?: string } }).state?.status ?? "");
-		if (status === "idle" || status === "") {
-			return;
-		}
-		if (Date.now() >= deadline) {
-			throw new Error(t("stillBusy"));
-		}
-		await new Promise((r) => setTimeout(r, 1000));
-	}
 }
 
 async function measure(): Promise<void> {
@@ -358,7 +372,6 @@ async function measure(): Promise<void> {
 			for (const ax of ["X", "Y"] as const) {
 				const run = await runNativeCapture(io, { accelerometer: accel, axis: ax, center: centerOf(ax), span: 20 });
 				const capture = parseAccelCsv(await downloadCapture(io, run));
-				await waitForIdle(30000);
 				firstCapture = firstCapture ?? capture;
 				moveResults[ax] = analyzeAxisBurst(capture);
 			}
@@ -376,10 +389,8 @@ async function measure(): Promise<void> {
 			};
 			const runA = await runBeltCapture(io, { ...opts, belt: "a" });
 			const a = await downloadCapture(io, runA);
-			await waitForIdle((runA.program.durationSec + 60) * 1000);
 			const runB = await runBeltCapture(io, { ...opts, belt: "b" });
 			const b = await downloadCapture(io, runB);
-			await waitForIdle((runB.program.durationSec + 60) * 1000);
 			lastResult.value = null;
 			beltResult.value = compareBelts(parseAccelCsv(a), parseAccelCsv(b));
 		} else if (method.value === "profile") {
@@ -387,7 +398,6 @@ async function measure(): Promise<void> {
 			for (let speed = 30; speed <= 180; speed += 30) {
 				const run = await runSpeedPointCapture(io, { accelerometer: accel, axis: selectedAxis.value, center: axisCenter(), speed });
 				entries.push({ speed, capture: parseAccelCsv(await downloadCapture(io, run)) });
-				await waitForIdle(60000);
 			}
 			lastResult.value = null;
 			profileResult.value = buildVibrationProfile(entries);
