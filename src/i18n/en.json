@@ -7,7 +7,7 @@
 	"overflows": "The accelerometer reported {count} sample overflow(s) — results may be unreliable. Try a lower sample rate (M955) or a shorter run.",
 	"notHomed": "Home all axes before measuring — the test shakes the machine and needs a known position.",
 	"emptyState": "No measurement yet",
-	"emptyHint": "Pick an accelerometer, axis and method above, then press Measure — or load a previous capture CSV.",
+	"emptyHint": "Set the options above and press Measure — or load a previous capture CSV.",
 	"controls": {
 		"accelerometer": "Accelerometer",
 		"axis": "Axis",
@@ -90,6 +90,51 @@
 	},
 	"embeddable": {
 		"caption": "Resonance summary"
+	},
+	"rail": {
+		"goals": "Tasks",
+		"diagnostics": "Diagnostics"
+	},
+	"runningTask": "Running {task} — keep clear, the machine is moving.",
+	"durationLabel": "est. {dur}",
+	"tasks": {
+		"sweep": {
+			"title": "Calibrate input shaping",
+			"blurb": "Sweeps one axis through a frequency band and recommends the input shaper (M593) that removes the most ringing — with its predicted smoothing and a safe maximum acceleration.",
+			"run": "Moves the selected axis back and forth near its centre · all axes must be homed"
+		},
+		"belts": {
+			"title": "Belt tension (CoreXY)",
+			"blurb": "Excites the two CoreXY belts in turn (the X+Y and X−Y diagonals) and compares their resonance. Matched belts overlap; a tension imbalance scales one curve; a different shape points to a mechanical fault rather than tension.",
+			"axisNote": "Tests both belts",
+			"run": "Moves both belts diagonally near the centre · CoreXY kinematics only"
+		},
+		"profile": {
+			"title": "Vibration vs speed",
+			"blurb": "Runs the axis at a range of speeds and measures vibration at each one, flagging the speed bands that excite a resonance so you can avoid them in your slicer.",
+			"run": "Constant-speed passes on the selected axis · all axes must be homed"
+		},
+		"axescheck": {
+			"title": "Accelerometer orientation",
+			"blurb": "Works out how the accelerometer is mounted relative to the machine axes and suggests the M955 I parameter so X, Y and Z read in the right directions.",
+			"axisNote": "Pulses X then Y",
+			"run": "One sharp move per horizontal axis · all axes must be homed"
+		},
+		"excite": {
+			"title": "Excite one frequency",
+			"blurb": "Drives the axis at a single fixed frequency and shows the response over time as a spectrogram — handy for studying a suspicious peak found during calibration.",
+			"run": "Oscillates the selected axis at the chosen frequency near its centre"
+		},
+		"move": {
+			"title": "Quick test move",
+			"blurb": "A single out-and-back move with the recorder armed — a fast resonance check without the full sweep. Less thorough than calibration, but quick.",
+			"run": "One out-and-back move on the selected axis near its centre"
+		},
+		"custom": {
+			"title": "Custom move profile",
+			"blurb": "Records while running your own G-code moves — for non-standard tests or reproducing a specific motion. One move per line.",
+			"run": "Runs the G-code you supply with the recorder armed around it"
+		}
 	},
 	"captureTimeout": "The accelerometer never reported a completed recording — check that it is configured and reachable, then try again."
 }
