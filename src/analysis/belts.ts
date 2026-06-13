@@ -82,8 +82,11 @@ export function compareBelts(a: AccelCapture, b: AccelCapture, maxFreq = 200): B
 	const peakA = peaksA[0]?.freq ?? 0;
 	const peakB = peaksB[0]?.freq ?? 0;
 
+	// A high shape correlation already implies the peaks line up; an extra single-dominant-peak
+	// proximity gate is brittle on multi-peak plateaus (the two belts can pick different sub-peaks
+	// of the same shared ridge) and would wrongly demote a clearly-matched pair to "tension".
 	const balanced = energyRatio >= 0.7 && energyRatio <= 1.4;
-	const verdict: BeltVerdict = similarity >= 0.8 && balanced && Math.abs(peakA - peakB) <= 5
+	const verdict: BeltVerdict = similarity >= 0.8 && balanced
 		? "matched"
 		: similarity >= 0.6
 			? "tension"

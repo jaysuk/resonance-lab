@@ -19,7 +19,33 @@ function beltCsv(f0: number, amp: number): string {
 	return lines.join("\n");
 }
 
+/** Two near-equal resonances on a shared plateau; a0/a1 set which sub-peak dominates. */
+function beltCsvTwoPeak(f0: number, a0: number, f1: number, a1: number, seed0 = 7): string {
+	const fs = 1000;
+	const lines = ["Sample,X,Y,Z"];
+	let seed = seed0;
+	const rand = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff - 0.5; };
+	for (let i = 0; i < 6000; i++) {
+		const t = i / fs;
+		const env = Math.exp(-8 * (t % 0.5));
+		const ring = env * (a0 * Math.sin(2 * Math.PI * f0 * t) + a1 * Math.sin(2 * Math.PI * f1 * t));
+		lines.push(`${i},${(ring + 0.1 * rand()).toFixed(5)},${(0.3 * ring + 0.1 * rand()).toFixed(5)},0.98`);
+	}
+	lines.push(`Rate ${fs} overflows 0`);
+	return lines.join("\n");
+}
+
 describe("belt comparison", () => {
+	it("balanced, near-identical belts stay matched even when the dominant sub-peak differs", () => {
+		// Same multi-peak ridge, balanced energy — but A leans on the 60 Hz peak and B on the 72 Hz
+		// peak. This must read "matched" (a brittle single-peak proximity gate used to call it tension).
+		const r = compareBeltCsvs(beltCsvTwoPeak(60, 2, 72, 1.9, 7), beltCsvTwoPeak(60, 1.9, 72, 2, 19));
+		expect(r.similarity).toBeGreaterThan(0.9);
+		expect(Math.abs(r.energyRatio - 1)).toBeLessThan(0.3); // balanced
+		expect(Math.abs(r.peakA - r.peakB)).toBeGreaterThan(5); // dominant sub-peaks disagree
+		expect(r.verdict).toBe("matched");
+	});
+
 	it("identical belts are matched", () => {
 		const r = compareBeltCsvs(beltCsv(52, 2), beltCsv(52, 2));
 		expect(r.verdict).toBe("matched");

@@ -52,7 +52,7 @@
 		"matched": "Belts are well matched ({sim}% similar)",
 		"matchedDetail": "Both belts resonate alike (peaks {peakA} / {peakB} Hz) with balanced energy — no tension adjustment needed.",
 		"tension": "Likely tension imbalance ({sim}% similar shape)",
-		"tensionDetail": "The spectra share a shape but {tighter} carries {ratio}× the vibration energy — adjust belt tension and re-run.",
+		"tensionDetail": "The spectra share a shape but {louder} carries {ratio}× the vibration energy — adjust belt tension and re-run.",
 		"mismatch": "Belt paths behave differently ({sim}% similar)",
 		"mismatchDetail": "Different resonances ({peakA} vs {peakB} Hz) point at a mechanical difference — check pulleys, idlers and belt paths, not just tension."
 	},

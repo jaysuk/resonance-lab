@@ -474,8 +474,9 @@ const beltVerdict = computed(() => {
 		return { color: "success", icon: "mdi-check-decagram", headline: t("belts.matched", { sim }), detail: t("belts.matchedDetail", { peakA: r.peakA.toFixed(1), peakB: r.peakB.toFixed(1) }) };
 	}
 	if (r.verdict === "tension") {
-		const tighter = r.energyRatio > 1 ? t("belts.beltB") : t("belts.beltA");
-		return { color: "warning", icon: "mdi-scale-unbalanced", headline: t("belts.tension", { sim }), detail: t("belts.tensionDetail", { tighter, ratio: (r.energyRatio > 1 ? r.energyRatio : 1 / r.energyRatio).toFixed(2) }) };
+		const louder = r.energyRatio > 1 ? t("belts.beltA") : t("belts.beltB");
+		const ratio = (r.energyRatio > 1 ? r.energyRatio : 1 / r.energyRatio).toFixed(2);
+		return { color: "warning", icon: "mdi-scale-unbalanced", headline: t("belts.tension", { sim }), detail: t("belts.tensionDetail", { louder, ratio }) };
 	}
 	return { color: "error", icon: "mdi-alert-octagon-outline", headline: t("belts.mismatch", { sim }), detail: t("belts.mismatchDetail", { peakA: r.peakA.toFixed(1), peakB: r.peakB.toFixed(1) }) };
 });
