@@ -23,16 +23,26 @@ function currentVersion(): string {
 	return plugins?.get("ResonanceLab")?.version ?? "0.0.0";
 }
 
-/** Throttled on-load check; never throws. */
+/**
+ * Throttled on-load check; never throws — it runs fire-and-forget from onMounted, so any failure
+ * (offline, rate-limited, CORS, no release yet, or a host without a usable localStorage) must be
+ * swallowed rather than becoming an unhandled rejection.
+ */
 export async function runUpdateCheck(force = false): Promise<void> {
-	if (!force) {
-		const last = Number(localStorage.getItem(LS_LAST) || 0);
-		if (Date.now() - last < CHECK_INTERVAL_MS) {
-			return;
+	try {
+		if (!force) {
+			const last = Number(localStorage.getItem(LS_LAST) || 0);
+			if (Date.now() - last < CHECK_INTERVAL_MS) {
+				return;
+			}
 		}
+		// Stamp the attempt up front so a flaky network throttles the next try rather than
+		// re-hitting GitHub on every page mount.
+		localStorage.setItem(LS_LAST, String(Date.now()));
+		updateState.value = await checkForUpdate({ owner: OWNER, repo: REPO, currentVersion: currentVersion() });
+	} catch {
+		// Intentionally ignored — see the contract above.
 	}
-	updateState.value = await checkForUpdate({ owner: OWNER, repo: REPO, currentVersion: currentVersion() });
-	localStorage.setItem(LS_LAST, String(Date.now()));
 }
 
 /** One-click apply; on CORS-blocked downloads, falls back to a direct browser download. */
