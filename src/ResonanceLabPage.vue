@@ -475,6 +475,23 @@ async function readAccelOrientation(accelId: string): Promise<number> {
 	}
 }
 
+/**
+ * Read the accelerometer's real sample rate (Hz) from its M955 report. The recorder is armed for a
+ * fixed sample COUNT, so this must match reality: assume too high and M956 keeps sampling long after
+ * the motion ends (machine idle while the recording finishes — the 20-30s belt-test stall). Default
+ * 1000 if the report can't be parsed.
+ */
+async function readAccelRate(accelId: string): Promise<number> {
+	try {
+		const reply = await io.sendCode(`M955 P${accelId}`);
+		const m = /(\d+(?:\.\d+)?)\s*Hz/i.exec(reply);
+		const rate = m ? Math.round(parseFloat(m[1])) : 0;
+		return rate >= 100 && rate <= 20000 ? rate : 1000;
+	} catch {
+		return 1000;
+	}
+}
+
 async function measure(): Promise<void> {
 	const accel = selectedAccel.value ?? accelItems.value[0];
 	if (!accel) {
@@ -499,10 +516,13 @@ async function measure(): Promise<void> {
 			running.value = false;
 			return;
 		}
+		// Size every recording to the accelerometer's real rate (not an assumed 1000 Hz), so M956
+		// stops near the end of the motion instead of over-sampling into idle time.
+		const sampleRate = await readAccelRate(accel.id);
 		if (method.value === "excite") {
 			const run = await runFixedExcitation(io, {
 				accelerometer: accel, axis: selectedAxis.value, center: axisCenter(),
-				freq: adv.value.exciteFreq, seconds: adv.value.exciteSeconds,
+				freq: adv.value.exciteFreq, seconds: adv.value.exciteSeconds, expectedSampleRate: sampleRate,
 			});
 			finish(parse(await downloadCapture(io, run)), `${selectedAxis.value} · ${adv.value.exciteFreq} Hz`);
 		} else if (method.value === "axescheck") {
@@ -534,6 +554,7 @@ async function measure(): Promise<void> {
 			const opts = {
 				accelerometer: accel, centerX: centerOf("X"), centerY: centerOf("Y"),
 				startFreq: adv.value.beltStart, endFreq: adv.value.beltEnd, hzPerSec: adv.value.beltHz,
+				expectedSampleRate: sampleRate,
 			};
 			const runA = await runBeltCapture(io, { ...opts, belt: "a" });
 			const a = await downloadCapture(io, runA);
@@ -544,7 +565,7 @@ async function measure(): Promise<void> {
 		} else if (method.value === "profile") {
 			const entries: Array<{ speed: number; capture: ReturnType<typeof parseAccelCsv> }> = [];
 			for (let speed = adv.value.speedMin; speed <= adv.value.speedMax; speed += Math.max(1, adv.value.speedStep)) {
-				const run = await runSpeedPointCapture(io, { accelerometer: accel, axis: selectedAxis.value, center: axisCenter(), speed });
+				const run = await runSpeedPointCapture(io, { accelerometer: accel, axis: selectedAxis.value, center: axisCenter(), speed, expectedSampleRate: sampleRate });
 				entries.push({ speed, capture: parseAccelCsv(await downloadCapture(io, run)) });
 			}
 			lastResult.value = null;
@@ -558,6 +579,7 @@ async function measure(): Promise<void> {
 				const run = await runSweepCapture(io, {
 					accelerometer: accel, axis: ax, center: centerOf(ax),
 					startFreq: adv.value.startFreq, endFreq: adv.value.endFreq, hzPerSec: adv.value.hzPerSec,
+					expectedSampleRate: sampleRate,
 				});
 				collected.push({ axis: ax, ...parse(await downloadCapture(io, run)) });
 			}
@@ -605,7 +627,7 @@ async function verify(): Promise<void> {
 		const run = await runSweepCapture(io, {
 			accelerometer: accel, axis: before.axis, center: axisCenter(),
 			startFreq: adv.value.startFreq, endFreq: adv.value.endFreq, hzPerSec: adv.value.hzPerSec,
-			keepShaper: true,
+			keepShaper: true, expectedSampleRate: await readAccelRate(accel.id),
 		});
 		const after = analyseCapture(parseAccelCsv(await downloadCapture(io, run)));
 		const eBefore = before.analysis.normalized.reduce((a, b) => a + b, 0);
