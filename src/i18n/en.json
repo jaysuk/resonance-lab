@@ -11,6 +11,7 @@
 	"controls": {
 		"accelerometer": "Accelerometer",
 		"axis": "Axis",
+		"axes": "Axes",
 		"method": "Method",
 		"measure": "Measure",
 		"advanced": "Advanced options",
@@ -63,6 +64,12 @@
 		"problems": "Avoid printing at: {speeds}",
 		"problemsDetail": "These speeds excite a resonance (≥2× the baseline). Quietest tested speeds: {quiet}."
 	},
+	"multi": {
+		"headline": "Per-axis resonance",
+		"row": "peak {peak} Hz → {shaper} {'@'} {freq} Hz (−{reduction}%)",
+		"quiet": "no significant resonance (peak {peak} Hz)",
+		"note": "RepRapFirmware applies one input shaper (M593) to all axes — pick the axis whose resonance you most want to suppress, or apply the lowest frequency."
+	},
 	"results": {
 		"headline": "Apply {shaper} {'@'} {freq} Hz — removes ~{reduction}% of ringing",
 		"detail": "Estimated smoothing {smoothing} mm · keep acceleration below {accel} mm/s² · main resonance at {peak} Hz",
@@ -100,8 +107,8 @@
 	"tasks": {
 		"sweep": {
 			"title": "Calibrate input shaping",
-			"blurb": "Sweeps one axis through a frequency band and recommends the input shaper (M593) that removes the most ringing — with its predicted smoothing and a safe maximum acceleration.",
-			"run": "Moves the selected axis back and forth near its centre · all axes must be homed"
+			"blurb": "Sweeps the selected axis — or several at once, overlaid for comparison — through a frequency band and recommends the input shaper (M593) that removes the most ringing, with its predicted smoothing and a safe maximum acceleration.",
+			"run": "Moves each selected axis back and forth near its centre · all axes must be homed"
 		},
 		"belts": {
 			"title": "Belt tension (CoreXY)",

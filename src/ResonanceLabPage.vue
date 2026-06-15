@@ -85,7 +85,10 @@
 						<div v-else-if="selectedAccel" class="text-body-2">
 							<span class="text-medium-emphasis">{{ $t("plugins.resonanceLab.controls.accelerometer") }}:</span> {{ selectedAccel.label }}
 						</div>
-						<v-select v-if="activeTask.usesAxis" v-model="selectedAxis" :items="axisItems" density="compact" variant="outlined"
+						<v-select v-if="method === 'sweep'" v-model="selectedAxes" :items="axisItems" multiple chips closable-chips
+								  density="compact" variant="outlined" hide-details style="min-width: 170px"
+								  :label="$t('plugins.resonanceLab.controls.axes')" :disabled="running" />
+						<v-select v-else-if="activeTask.usesAxis" v-model="selectedAxis" :items="axisItems" density="compact" variant="outlined"
 								  hide-details style="max-width: 110px" :label="$t('plugins.resonanceLab.controls.axis')" :disabled="running" />
 						<v-chip v-else size="small" variant="tonal" prepend-icon="mdi-axis-arrow">{{ taskAxisNote }}</v-chip>
 						<v-text-field v-if="activeTask.params.includes('startFreq')" v-model.number="adv.startFreq" type="number" density="compact" variant="outlined" hide-details label="Start (Hz)" style="max-width: 120px" :disabled="running" />
@@ -234,6 +237,31 @@
 					</div>
 				</template>
 
+				<!-- Multi-axis calibration overlay -->
+				<template v-else-if="multiResults.length && multiChart">
+					<v-card variant="tonal" color="info" class="mb-3">
+						<v-card-text class="py-3">
+							<div class="text-subtitle-1 font-weight-medium mb-2">{{ $t("plugins.resonanceLab.multi.headline") }}</div>
+							<div v-for="row in multiRows" :key="row.axis" class="d-flex align-center ga-3 py-1">
+								<v-chip size="small" label variant="outlined" :style="{ borderColor: row.color, color: row.color }">{{ row.axis }}</v-chip>
+								<span class="text-body-2">
+									<template v-if="row.fit">{{ $t("plugins.resonanceLab.multi.row", { peak: row.peak, shaper: row.fit.display, freq: row.fit.freq.toFixed(1), reduction: row.fit.reduction }) }}</template>
+									<template v-else>{{ $t("plugins.resonanceLab.multi.quiet", { peak: row.peak }) }}</template>
+								</span>
+								<v-spacer />
+								<v-btn v-if="row.fit" size="small" variant="tonal" prepend-icon="mdi-check" :loading="applying" :disabled="!isConnected" @click="applyShaperFit(row.fit.name, row.fit.freq)">
+									{{ $t("plugins.resonanceLab.results.apply", { shaper: row.fit.display }) }}
+								</v-btn>
+							</div>
+							<div class="text-caption text-medium-emphasis mt-2">{{ $t("plugins.resonanceLab.multi.note") }}</div>
+						</v-card-text>
+					</v-card>
+					<div class="flex-grow-1" style="min-height: 320px">
+						<LineChart :labels="multiChart.labels" :series="multiChart.series"
+								   x-title="Frequency (Hz)" y-title="Vibration (normalised)" />
+					</div>
+				</template>
+
 				<!-- Empty state -->
 				<div v-else-if="!running" class="flex-grow-1 d-flex flex-column align-center justify-center text-medium-emphasis">
 					<v-icon size="64" class="mb-3">mdi-sine-wave</v-icon>
@@ -304,6 +332,9 @@ const axisItems = computed(() => {
 	return letters.length > 0 ? letters : ["X", "Y"];
 });
 const selectedAxis = ref("X");
+// Calibration can sweep several axes in one go and overlay them (RRF still applies a single global
+// shaper, so this is for comparison + choosing which resonance to target).
+const selectedAxes = ref<Array<string>>(["X", "Y"]);
 
 type Method = "sweep" | "move" | "custom" | "belts" | "profile" | "excite" | "axescheck";
 const method = ref<Method>("sweep");
@@ -344,6 +375,7 @@ function selectTask(id: Method): void {
 	profileResult.value = null;
 	orientationResult.value = null;
 	verifyResult.value = null;
+	multiResults.value = [];
 	error.value = "";
 }
 
@@ -352,7 +384,7 @@ const durationEstimate = computed(() => {
 	const a = adv.value;
 	let secs: number;
 	switch (method.value) {
-		case "sweep": secs = (a.endFreq - a.startFreq) / Math.max(0.1, a.hzPerSec) + 6; break;
+		case "sweep": secs = ((a.endFreq - a.startFreq) / Math.max(0.1, a.hzPerSec) + 6) * Math.max(1, selectedAxes.value.length); break;
 		case "belts": secs = 2 * ((a.beltEnd - a.beltStart) / Math.max(0.1, a.beltHz) + 8); break;
 		case "profile": {
 			let s = 0;
@@ -371,7 +403,8 @@ const durationEstimate = computed(() => {
 });
 
 const canMeasure = computed(() => isConnected.value && !running.value
-	&& (selectedAccel.value !== null || accelItems.value.length > 0));
+	&& (selectedAccel.value !== null || accelItems.value.length > 0)
+	&& (method.value !== "sweep" || selectedAxes.value.length > 0));
 
 // ── Measurement ──────────────────────────────────────────────────────────────
 /**
@@ -459,6 +492,7 @@ async function measure(): Promise<void> {
 	profileResult.value = null;
 	orientationResult.value = null;
 	verifyResult.value = null;
+	multiResults.value = [];
 	try {
 		if (method.value === "belts" && !String((machineStore.model as { move?: { kinematics?: { name?: string } } }).move?.kinematics?.name ?? "").toLowerCase().includes("core")) {
 			error.value = t("belts.notCoreXY");
@@ -515,16 +549,32 @@ async function measure(): Promise<void> {
 			}
 			lastResult.value = null;
 			profileResult.value = buildVibrationProfile(entries);
-		} else {
-			const common = { accelerometer: accel, axis: selectedAxis.value, center: axisCenter() };
-			const run = method.value === "sweep"
-				? await runSweepCapture(io, { ...common, startFreq: adv.value.startFreq, endFreq: adv.value.endFreq, hzPerSec: adv.value.hzPerSec })
-				: await runNativeCapture(io, {
-					...common,
-					customMoves: method.value === "custom" && adv.value.customMoves.trim()
-						? adv.value.customMoves.split("\n").map((l) => l.trim()).filter(Boolean)
-						: undefined,
+		} else if (method.value === "sweep") {
+			// Sweep each selected axis in turn. One axis → the rich single-axis verdict; several →
+			// overlay them and list a per-axis suggestion (RRF applies one shaper machine-wide).
+			const axes = selectedAxes.value.length ? selectedAxes.value : [selectedAxis.value];
+			const collected: Array<{ axis: string } & ReturnType<typeof parse>> = [];
+			for (const ax of axes) {
+				const run = await runSweepCapture(io, {
+					accelerometer: accel, axis: ax, center: centerOf(ax),
+					startFreq: adv.value.startFreq, endFreq: adv.value.endFreq, hzPerSec: adv.value.hzPerSec,
 				});
+				collected.push({ axis: ax, ...parse(await downloadCapture(io, run)) });
+			}
+			if (collected.length === 1) {
+				selectedAxis.value = collected[0].axis;
+				finish(collected[0], `${collected[0].axis} · ${t("methods.sweep")}`);
+			} else {
+				lastResult.value = null;
+				multiResults.value = collected.map((c) => ({ axis: c.axis, analysis: c.analysis, capture: c.capture }));
+			}
+		} else {
+			const run = await runNativeCapture(io, {
+				accelerometer: accel, axis: selectedAxis.value, center: axisCenter(),
+				customMoves: method.value === "custom" && adv.value.customMoves.trim()
+					? adv.value.customMoves.split("\n").map((l) => l.trim()).filter(Boolean)
+					: undefined,
+			});
 			const csv = await downloadCapture(io, run);
 			finish(parse(csv), `${selectedAxis.value} · ${t(`methods.${method.value}`)}`);
 		}
@@ -539,6 +589,8 @@ async function measure(): Promise<void> {
 const orientationResult = ref<{ solution: OrientationSolution; accelId: string; coupling: number } | null>(null);
 const verifyResult = ref<{ reduction: number; before: { labels: Array<number>; data: Array<number> }; after: Array<number> } | null>(null);
 const appliedFit = ref<{ name: ShaperName; freq: number } | null>(null);
+/** Calibration run across several axes: each axis's analysis, overlaid for comparison. */
+const multiResults = ref<Array<{ axis: string } & ReturnType<typeof parse>>>([]);
 
 /** Re-run the same sweep with the shaper ACTIVE and compare energy before/after. */
 async function verify(): Promise<void> {
@@ -630,6 +682,45 @@ const profileVerdict = computed(() => {
 		detail: t("profile.problemsDetail", { quiet: p.quietest.slice(0, 3).map((x) => `${x.speed} mm/s`).join(", ") }),
 	};
 });
+
+// ── Multi-axis calibration overlay ───────────────────────────────────────────
+const AXIS_COLORS: Record<string, string> = { X: "#2196f3", Y: "#ff9800", Z: "#4caf50", U: "#9c27b0", V: "#00bcd4", W: "#e91e63" };
+const multiChart = computed(() => {
+	const rs = multiResults.value;
+	if (rs.length === 0) {
+		return null;
+	}
+	const maxFreq = 200;
+	// Common x-axis: the longest in-band freq grid across the runs (same rate ⇒ identical bins).
+	let labels: Array<number> = [];
+	for (const r of rs) {
+		const freqs = r.analysis.spectrum.freqs;
+		const lbl: Array<number> = [];
+		for (let i = 0; i < freqs.length && freqs[i] <= maxFreq; i++) {
+			lbl.push(Math.round(freqs[i] * 10) / 10);
+		}
+		if (lbl.length > labels.length) {
+			labels = lbl;
+		}
+	}
+	return {
+		labels,
+		series: rs.map((r) => ({
+			label: `${r.axis} axis`,
+			data: Array.from(r.analysis.normalized).slice(0, labels.length),
+			color: AXIS_COLORS[r.axis.toUpperCase()] ?? "#888888",
+		})),
+	};
+});
+const multiRows = computed(() => multiResults.value.map((r) => {
+	const best = r.analysis.recommendation?.best;
+	return {
+		axis: r.axis,
+		color: AXIS_COLORS[r.axis.toUpperCase()] ?? "#888888",
+		peak: r.analysis.peaks[0]?.freq.toFixed(1) ?? "—",
+		fit: best ? { name: best.name, display: SHAPER_DISPLAY_NAMES[best.name], freq: best.freq, reduction: (100 - best.vibrations * 100).toFixed(0) } : null,
+	};
+}));
 
 function parse(csvText: string) {
 	const capture = parseAccelCsv(csvText);
@@ -746,20 +837,25 @@ async function applyOrientation(): Promise<void> {
 	uiStore.makeNotification(LogLevel.success, "Resonance Lab", t("orientation.applied", { i: o.solution.iParam }));
 }
 
-async function applyShaper(): Promise<void> {
-	const fit = rec.value?.allShapers.find((s) => s.name === overlay.value) ?? rec.value?.best;
-	if (!fit) {
-		return;
-	}
+/** Apply a specific shaper as the machine-wide M593 (RRF has no per-axis shaping). */
+async function applyShaperFit(name: ShaperName, freq: number): Promise<void> {
 	applying.value = true;
 	try {
-		await machineStore.sendCode(`M593 P"${fit.name}" F${fit.freq.toFixed(1)}`);
-		appliedFit.value = { name: fit.name, freq: fit.freq };
-		uiStore.makeNotification(LogLevel.success, "Resonance Lab", t("results.applied", { shaper: SHAPER_DISPLAY_NAMES[fit.name], freq: fit.freq.toFixed(1) }));
+		await machineStore.sendCode(`M593 P"${name}" F${freq.toFixed(1)}`);
+		appliedFit.value = { name, freq };
+		uiStore.makeNotification(LogLevel.success, "Resonance Lab", t("results.applied", { shaper: SHAPER_DISPLAY_NAMES[name], freq: freq.toFixed(1) }));
 	} catch (e) {
 		uiStore.makeNotification(LogLevel.error, "Resonance Lab", (e as Error).message || String(e));
-	} finally {
+	}
+	finally {
 		applying.value = false;
+	}
+}
+
+async function applyShaper(): Promise<void> {
+	const fit = rec.value?.allShapers.find((s) => s.name === overlay.value) ?? rec.value?.best;
+	if (fit) {
+		await applyShaperFit(fit.name, fit.freq);
 	}
 }
 </script>
