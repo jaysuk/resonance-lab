@@ -431,6 +431,17 @@ function centerOf(letter: string): number {
 		? Math.round((ax.min + ax.max) / 2) : 0;
 }
 
+/** Read the accelerometer's currently-configured M955 orientation from its report (default 20 = identity). */
+async function readAccelOrientation(accelId: string): Promise<number> {
+	try {
+		const reply = await io.sendCode(`M955 P${accelId}`);
+		const m = /orientation[:\s]+(\d+)/i.exec(reply);
+		return m ? parseInt(m[1], 10) : 20;
+	} catch {
+		return 20;
+	}
+}
+
 async function measure(): Promise<void> {
 	const accel = selectedAccel.value ?? accelItems.value[0];
 	if (!accel) {
@@ -461,18 +472,28 @@ async function measure(): Promise<void> {
 			});
 			finish(parse(await downloadCapture(io, run)), `${selectedAxis.value} · ${adv.value.exciteFreq} Hz`);
 		} else if (method.value === "axescheck") {
-			// One sharp move per horizontal axis; gravity (pre-motion DC) pins the vertical.
-			const moveResults: Partial<Record<"X" | "Y", ReturnType<typeof analyzeAxisBurst>>> = {};
-			let firstCapture: ReturnType<typeof parseAccelCsv> | null = null;
-			for (const ax of ["X", "Y"] as const) {
-				const run = await runNativeCapture(io, { accelerometer: accel, axis: ax, center: centerOf(ax), span: 20 });
-				const capture = parseAccelCsv(await downloadCapture(io, run));
-				firstCapture = firstCapture ?? capture;
-				moveResults[ax] = analyzeAxisBurst(capture);
+			// Measure the RAW mounting. Any orientation already configured in M955 makes the chip report
+			// machine-aligned axes, so without this we'd solve a correction on top of the existing one —
+			// e.g. re-running after applying I06 would read "already correct" and suggest the wrong value.
+			// Neutralise to identity (I20) for the test, then restore whatever was configured.
+			const prevOrientation = await readAccelOrientation(accel.id);
+			await io.sendCode(`M955 P${accel.id} I20`);
+			try {
+				// One sharp move per horizontal axis; gravity (pre-motion DC) pins the vertical.
+				const moveResults: Partial<Record<"X" | "Y", ReturnType<typeof analyzeAxisBurst>>> = {};
+				let firstCapture: ReturnType<typeof parseAccelCsv> | null = null;
+				for (const ax of ["X", "Y"] as const) {
+					const run = await runNativeCapture(io, { accelerometer: accel, axis: ax, center: centerOf(ax), span: 20 });
+					const capture = parseAccelCsv(await downloadCapture(io, run));
+					firstCapture = firstCapture ?? capture;
+					moveResults[ax] = analyzeAxisBurst(capture);
+				}
+				const gravity = detectVerticalAxis(firstCapture!, moveResults.X!.dc);
+				orientationResult.value = { solution: solveOrientation(moveResults, gravity), accelId: accel.id, coupling: Math.max(moveResults.X!.coupling, moveResults.Y!.coupling) };
+				lastResult.value = null;
+			} finally {
+				await io.sendCode(`M955 P${accel.id} I${prevOrientation}`);
 			}
-			const gravity = detectVerticalAxis(firstCapture!, moveResults.X!.dc);
-			orientationResult.value = { solution: solveOrientation(moveResults, gravity), accelId: accel.id, coupling: Math.max(moveResults.X!.coupling, moveResults.Y!.coupling) };
-			lastResult.value = null;
 		} else if (method.value === "belts") {
 			// Tension matching only needs the band the belt resonances live in — a light 15–95 Hz
 			// sweep at 2 Hz/s (~40s per belt), not the full calibration band. Defaults are belt-specific.

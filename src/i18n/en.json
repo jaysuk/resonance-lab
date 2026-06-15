@@ -64,13 +64,13 @@
 		"problemsDetail": "These speeds excite a resonance (≥2× the baseline). Quietest tested speeds: {quiet}."
 	},
 	"results": {
-		"headline": "Apply {shaper} @ {freq} Hz — removes ~{reduction}% of ringing",
+		"headline": "Apply {shaper} {'@'} {freq} Hz — removes ~{reduction}% of ringing",
 		"detail": "Estimated smoothing {smoothing} mm · keep acceleration below {accel} mm/s² · main resonance at {peak} Hz",
 		"quiet": "No significant resonance detected",
 		"quietDetail": "This capture shows no ringing worth shaping — either the machine is already well behaved, or the test didn't excite it. Try the frequency sweep method.",
 		"compare": "Compare shapers",
 		"apply": "Apply {shaper}",
-		"applied": "{shaper} @ {freq} Hz applied (M593). Add it to config.g to keep it after restarts.",
+		"applied": "{shaper} {'@'} {freq} Hz applied (M593). Add it to config.g to keep it after restarts.",
 		"verify": "Verify",
 		"verified": "Verified: {reduction}% of vibration energy removed with the shaper active.",
 		"before": "Before (no shaper)",
@@ -78,14 +78,14 @@
 		"source": "Source: {source}",
 		"spectrum": "Spectrum",
 		"spectrogram": "Spectrogram",
-		"samples": "{count} samples @ {rate} Hz",
+		"samples": "{count} samples {'@'} {rate} Hz",
 		"peak": "peak {freq} Hz"
 	},
 	"panel": {
 		"ready": "Accelerometer ready",
 		"notReady": "No accelerometer detected",
 		"noData": "No measurements yet — open the lab to run one.",
-		"lastResult": "{shaper} @ {freq} Hz · {axis} axis",
+		"lastResult": "{shaper} {'@'} {freq} Hz · {axis} axis",
 		"open": "Open Resonance Lab"
 	},
 	"embeddable": {
