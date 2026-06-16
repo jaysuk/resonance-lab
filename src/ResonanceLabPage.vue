@@ -13,17 +13,9 @@
 			<v-icon size="large" class="me-1">mdi-sine-wave</v-icon>
 			<span class="text-subtitle-1 font-weight-medium">{{ $t("plugins.resonanceLab.title") }}</span>
 			<v-spacer />
-			<v-menu @update:model-value="(open: boolean) => open && refreshRemoteCaptures()">
-				<template #activator="{ props: m }">
-					<v-btn v-bind="m" variant="text" prepend-icon="mdi-folder-open-outline" :disabled="running || !isConnected">
-						{{ $t("plugins.resonanceLab.controls.captures") }}
-					</v-btn>
-				</template>
-				<v-list density="compact" max-height="320">
-					<v-list-item v-if="remoteCaptures.length === 0" :title="$t('plugins.resonanceLab.controls.noCaptures')" disabled />
-					<v-list-item v-for="f in remoteCaptures" :key="f" :title="f" @click="openRemoteCapture(f)" />
-				</v-list>
-			</v-menu>
+			<v-btn variant="text" prepend-icon="mdi-folder-open-outline" :disabled="running || !isConnected" @click="openCaptureBrowser">
+				{{ $t("plugins.resonanceLab.controls.captures") }}
+			</v-btn>
 			<v-btn variant="text" prepend-icon="mdi-file-upload-outline" :disabled="running" @click="filePicker?.click()">
 				{{ $t("plugins.resonanceLab.controls.loadCsv") }}
 			</v-btn>
@@ -270,6 +262,46 @@
 				</div>
 			</div>
 		</div>
+
+		<!-- Capture browser -->
+		<v-dialog v-model="captureBrowser" max-width="640" scrollable>
+			<v-card>
+				<v-card-title class="d-flex align-center">
+					<v-icon class="me-2">mdi-folder-open-outline</v-icon>
+					{{ $t("plugins.resonanceLab.captures.title") }}
+					<v-spacer />
+					<v-btn icon="mdi-refresh" variant="text" size="small" :title="$t('plugins.resonanceLab.captures.refresh')" @click="refreshRemoteCaptures" />
+				</v-card-title>
+				<v-card-subtitle class="text-wrap">{{ $t("plugins.resonanceLab.captures.hint") }}</v-card-subtitle>
+				<v-card-text style="max-height: 60vh">
+					<div v-if="remoteFiles.length === 0" class="text-medium-emphasis py-6 text-center">{{ $t("plugins.resonanceLab.controls.noCaptures") }}</div>
+					<template v-for="g in groupedCaptures" :key="g.day">
+						<div class="text-overline text-medium-emphasis mt-2">{{ g.day }}</div>
+						<v-list-item v-for="f in g.items" :key="f.name" class="px-0" @click="toggleFile(f.name)">
+							<template #prepend>
+								<v-checkbox-btn :model-value="selectedFiles.includes(f.name)" density="compact" @click.stop="toggleFile(f.name)" />
+							</template>
+							<v-list-item-title class="d-flex align-center ga-2">
+								<v-icon size="small">{{ captureMeta(f.kind).icon }}</v-icon>
+								<span>{{ captureMeta(f.kind).label }}</span>
+								<v-chip v-if="f.axis" size="x-small" label variant="tonal">{{ f.axis }}</v-chip>
+							</v-list-item-title>
+							<v-list-item-subtitle>
+								{{ f.when.getTime() ? f.when.toLocaleTimeString() : f.name }}<template v-if="f.size"> · {{ Math.round(f.size / 1024) }} kB</template>
+							</v-list-item-subtitle>
+						</v-list-item>
+					</template>
+				</v-card-text>
+				<v-card-actions>
+					<span class="text-caption text-medium-emphasis ms-2">{{ $t("plugins.resonanceLab.captures.selected", { count: selectedFiles.length }) }}</span>
+					<v-spacer />
+					<v-btn variant="text" @click="captureBrowser = false">{{ $t("plugins.resonanceLab.captures.cancel") }}</v-btn>
+					<v-btn color="primary" :disabled="selectedFiles.length === 0" prepend-icon="mdi-download" @click="loadSelectedCaptures">
+						{{ $t("plugins.resonanceLab.captures.load") }}
+					</v-btn>
+				</v-card-actions>
+			</v-card>
+		</v-dialog>
 	</v-container>
 </template>
 
@@ -792,20 +824,132 @@ const spectrogram = computed(() => {
 });
 
 // ── Remote capture browser (0:/sys/accelerometer) ───────────────────────────
-const remoteCaptures = ref<Array<string>>([]);
+const CAPTURE_DIR = "0:/sys/accelerometer";
+const captureBrowser = ref(false);
+const selectedFiles = ref<Array<string>>([]);
+
+interface RemoteCapture { name: string; kind: string; axis: string; when: Date; size: number }
+const remoteFiles = ref<Array<RemoteCapture>>([]);
+
+/** Our captures are named rlab-<kind>-<axis>-<YYYYMMDDHHMMSS>.csv; parse that for grouping + labels. */
+function parseCaptureName(name: string, size: number): RemoteCapture {
+	const m = /^rlab-(belta|beltb|sweep|move|fix\d+|speed\d+)-([a-z]+)-(\d{14})\.csv$/i.exec(name);
+	if (!m) {
+		return { name, kind: "other", axis: "", when: new Date(0), size };
+	}
+	const s = m[3];
+	const when = new Date(+s.slice(0, 4), +s.slice(4, 6) - 1, +s.slice(6, 8), +s.slice(8, 10), +s.slice(10, 12), +s.slice(12, 14));
+	return { name, kind: m[1].toLowerCase(), axis: m[2].toUpperCase(), when, size };
+}
+
+/** Display label + icon for a capture kind. */
+function captureMeta(kind: string): { label: string; icon: string } {
+	if (kind === "belta") { return { label: t("captures.kinds.belta"), icon: "mdi-scale-balance" }; }
+	if (kind === "beltb") { return { label: t("captures.kinds.beltb"), icon: "mdi-scale-balance" }; }
+	if (kind === "sweep") { return { label: t("captures.kinds.sweep"), icon: "mdi-tune-variant" }; }
+	if (kind === "move") { return { label: t("captures.kinds.move"), icon: "mdi-arrow-left-right" }; }
+	if (kind.startsWith("fix")) { return { label: t("captures.kinds.excite"), icon: "mdi-pulse" }; }
+	if (kind.startsWith("speed")) { return { label: t("captures.kinds.speed"), icon: "mdi-speedometer" }; }
+	return { label: t("captures.kinds.other"), icon: "mdi-file-delimited-outline" };
+}
+
 async function refreshRemoteCaptures(): Promise<void> {
 	try {
-		const files = await (machineStore as unknown as { getFileList(dir: string): Promise<Array<{ name: string; isDirectory?: boolean }>> })
-			.getFileList("0:/sys/accelerometer");
-		remoteCaptures.value = files.filter((f) => !f.isDirectory && f.name.toLowerCase().endsWith(".csv")).map((f) => f.name).sort().reverse();
+		const files = await (machineStore as unknown as { getFileList(dir: string): Promise<Array<{ name: string; isDirectory?: boolean; size?: number }>> })
+			.getFileList(CAPTURE_DIR);
+		remoteFiles.value = files
+			.filter((f) => !f.isDirectory && f.name.toLowerCase().endsWith(".csv"))
+			.map((f) => parseCaptureName(f.name, f.size ?? 0))
+			.sort((a, b) => b.when.getTime() - a.when.getTime() || a.name.localeCompare(b.name));
+		selectedFiles.value = [];
 	} catch {
-		remoteCaptures.value = [];
+		remoteFiles.value = [];
 	}
 }
-async function openRemoteCapture(name: string): Promise<void> {
+
+/** Group captures by calendar day for the browser (newest first). */
+const groupedCaptures = computed(() => {
+	const groups: Array<{ day: string; items: Array<RemoteCapture> }> = [];
+	for (const f of remoteFiles.value) {
+		const day = f.when.getTime() === 0 ? t("captures.unknownDay") : f.when.toLocaleDateString();
+		let g = groups.find((x) => x.day === day);
+		if (!g) {
+			g = { day, items: [] };
+			groups.push(g);
+		}
+		g.items.push(f);
+	}
+	return groups;
+});
+
+function openCaptureBrowser(): void {
+	captureBrowser.value = true;
+	void refreshRemoteCaptures();
+}
+
+const downloadRemote = (name: string) => io.download(`${CAPTURE_DIR}/${name}`);
+
+function toggleFile(name: string): void {
+	const i = selectedFiles.value.indexOf(name);
+	if (i >= 0) {
+		selectedFiles.value.splice(i, 1);
+	} else {
+		selectedFiles.value.push(name);
+	}
+}
+
+function resetResults(): void {
+	lastResult.value = null;
+	beltResult.value = null;
+	profileResult.value = null;
+	orientationResult.value = null;
+	verifyResult.value = null;
+	multiResults.value = [];
+}
+
+/**
+ * Load the checked captures, choosing the view from what was selected: a Belt A + Belt B pair →
+ * tension comparison; several calibration sweeps → multi-axis overlay; anything else → the rich
+ * single-capture view.
+ */
+async function loadSelectedCaptures(): Promise<void> {
+	const picks = remoteFiles.value.filter((f) => selectedFiles.value.includes(f.name));
+	if (picks.length === 0) {
+		return;
+	}
+	error.value = "";
 	try {
-		finish(parse(await io.download(`0:/sys/accelerometer/${name}`)), name);
-		error.value = "";
+		if (picks.some((p) => p.kind === "belta" || p.kind === "beltb")) {
+			const a = picks.find((p) => p.kind === "belta");
+			const b = picks.find((p) => p.kind === "beltb");
+			if (!a || !b) {
+				error.value = t("captures.needBeltPair");
+				return;
+			}
+			const [ca, cb] = await Promise.all([downloadRemote(a.name), downloadRemote(b.name)]);
+			resetResults();
+			beltResult.value = compareBelts(parseAccelCsv(ca), parseAccelCsv(cb), 150, 5);
+			captureBrowser.value = false;
+			return;
+		}
+		const sweeps = picks.filter((p) => p.kind === "sweep");
+		if (sweeps.length > 1) {
+			const collected: Array<{ axis: string } & ReturnType<typeof parse>> = [];
+			for (const s of sweeps) {
+				collected.push({ axis: s.axis, ...parse(await downloadRemote(s.name)) });
+			}
+			resetResults();
+			multiResults.value = collected.map((c) => ({ axis: c.axis, analysis: c.analysis, capture: c.capture }));
+			captureBrowser.value = false;
+			return;
+		}
+		const one = picks[0];
+		resetResults();
+		if (one.axis) {
+			selectedAxis.value = one.axis;
+		}
+		finish(parse(await downloadRemote(one.name)), one.name);
+		captureBrowser.value = false;
 	} catch (e) {
 		error.value = (e as Error).message || String(e);
 	}

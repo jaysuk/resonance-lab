@@ -70,6 +70,25 @@
 		"quiet": "no significant resonance (peak {peak} Hz)",
 		"note": "RepRapFirmware applies one input shaper (M593) to all axes — pick the axis whose resonance you most want to suppress, or apply the lowest frequency."
 	},
+	"captures": {
+		"title": "Captured data",
+		"hint": "Tick one capture to view it, both belt files to compare tension, or several axis sweeps to overlay them.",
+		"refresh": "Refresh",
+		"selected": "{count} selected",
+		"load": "Load",
+		"cancel": "Cancel",
+		"needBeltPair": "Belt comparison needs both a Belt A and a Belt B capture — tick one of each.",
+		"unknownDay": "Other CSV files",
+		"kinds": {
+			"belta": "Belt A (X+Y)",
+			"beltb": "Belt B (X−Y)",
+			"sweep": "Calibration sweep",
+			"move": "Quick move",
+			"excite": "Fixed excitation",
+			"speed": "Speed point",
+			"other": "CSV file"
+		}
+	},
 	"results": {
 		"headline": "Apply {shaper} {'@'} {freq} Hz — removes ~{reduction}% of ringing",
 		"detail": "Estimated smoothing {smoothing} mm · keep acceleration below {accel} mm/s² · main resonance at {peak} Hz",
