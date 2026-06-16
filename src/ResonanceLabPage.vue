@@ -19,6 +19,7 @@
 			<v-btn variant="text" prepend-icon="mdi-file-upload-outline" :disabled="running" @click="filePicker?.click()">
 				{{ $t("plugins.resonanceLab.controls.loadCsv") }}
 			</v-btn>
+			<v-btn icon="mdi-help-circle-outline" variant="text" size="small" :title="$t('plugins.resonanceLab.help.open')" @click="helpDialog = true" />
 			<v-btn icon="mdi-bug-outline" variant="text" size="small" :title="$t('plugins.resonanceLab.controls.diagnostics')" @click="downloadDiagnostics" />
 			<input ref="filePicker" type="file" accept=".csv" class="d-none" @change="loadLocalCsv">
 		</div>
@@ -115,6 +116,11 @@
 
 				<!-- Results: verdict + chart get all remaining space -->
 				<template v-if="result">
+					<div v-if="multiResults.length" class="mb-2">
+						<v-btn size="small" variant="text" prepend-icon="mdi-arrow-left" @click="backToOverlay">
+							{{ $t("plugins.resonanceLab.multi.back") }}
+						</v-btn>
+					</div>
 					<v-alert v-if="result.analysis.overflows > 0" type="warning" variant="tonal" density="compact" class="mb-2">
 						{{ $t("plugins.resonanceLab.overflows", { count: result.analysis.overflows }) }}
 					</v-alert>
@@ -237,10 +243,13 @@
 							<div v-for="row in multiRows" :key="row.axis" class="d-flex align-center ga-3 py-1">
 								<v-chip size="small" label variant="outlined" :style="{ borderColor: row.color, color: row.color }">{{ row.axis }}</v-chip>
 								<span class="text-body-2">
-									<template v-if="row.fit">{{ $t("plugins.resonanceLab.multi.row", { peak: row.peak, shaper: row.fit.display, freq: row.fit.freq.toFixed(1), reduction: row.fit.reduction }) }}</template>
+									<template v-if="row.fit">{{ $t("plugins.resonanceLab.multi.row", { peak: row.peak, shaper: row.fit.display, freq: row.fit.freq.toFixed(1), reduction: row.fit.reduction, accel: row.fit.maxAccel }) }}</template>
 									<template v-else>{{ $t("plugins.resonanceLab.multi.quiet", { peak: row.peak }) }}</template>
 								</span>
 								<v-spacer />
+								<v-btn size="small" variant="text" prepend-icon="mdi-chart-bell-curve" @click="inspectAxis(row.axis)">
+									{{ $t("plugins.resonanceLab.multi.inspect") }}
+								</v-btn>
 								<v-btn v-if="row.fit" size="small" variant="tonal" prepend-icon="mdi-check" :loading="applying" :disabled="!isConnected" @click="applyShaperFit(row.fit.name, row.fit.freq)">
 									{{ $t("plugins.resonanceLab.results.apply", { shaper: row.fit.display }) }}
 								</v-btn>
@@ -262,6 +271,25 @@
 				</div>
 			</div>
 		</div>
+
+		<!-- Interpretation help -->
+		<v-dialog v-model="helpDialog" max-width="640" scrollable>
+			<v-card>
+				<v-card-title class="d-flex align-center">
+					<v-icon class="me-2">mdi-help-circle-outline</v-icon>{{ $t("plugins.resonanceLab.help.title") }}
+				</v-card-title>
+				<v-card-text style="max-height: 65vh">
+					<template v-for="sec in helpSections" :key="sec">
+						<div class="text-subtitle-2 mt-3">{{ $t(`plugins.resonanceLab.help.${sec}.heading`) }}</div>
+						<div class="text-body-2 text-medium-emphasis">{{ $t(`plugins.resonanceLab.help.${sec}.body`) }}</div>
+					</template>
+				</v-card-text>
+				<v-card-actions>
+					<v-spacer />
+					<v-btn variant="text" @click="helpDialog = false">{{ $t("plugins.resonanceLab.captures.cancel") }}</v-btn>
+				</v-card-actions>
+			</v-card>
+		</v-dialog>
 
 		<!-- Capture browser -->
 		<v-dialog v-model="captureBrowser" max-width="640" scrollable>
@@ -315,7 +343,7 @@ import i18n from "@/i18n";
 import { buildReport, downloadReport } from "dwc-plugin-runtime";
 
 import { compareBelts } from "./analysis/belts";
-import { analyzeAxisBurst, detectVerticalAxis, solveOrientation, type OrientationSolution } from "./analysis/axesMap";
+import { analyzeAxisBurst, detectVerticalAxis, solveOrientation } from "./analysis/axesMap";
 import { analyseCapture } from "./analysis/pipeline";
 import { SHAPER_DISPLAY_NAMES, type ShaperName } from "./analysis/shapers";
 import { buildVibrationProfile } from "./analysis/vibration";
@@ -328,7 +356,7 @@ import { computeSpectrogram } from "./analysis/stft";
 import LineChart from "./components/LineChart.vue";
 import SpectrogramView from "./components/SpectrogramView.vue";
 import SpectrumChart from "./components/SpectrumChart.vue";
-import { beltResult, lastResult, measurementRunning, profileResult } from "./state";
+import { beltResult, lastResult, measurementRunning, multiResults, orientationResult, profileResult } from "./state";
 import { applyUpdateNow, runUpdateCheck, updateApplying, updatePendingReload, updateState } from "./updateCheck";
 
 onMounted(() => { void runUpdateCheck(); });
@@ -344,6 +372,8 @@ const result = lastResult;
 const error = ref("");
 const applying = ref(false);
 const filePicker = ref<HTMLInputElement | null>(null);
+const helpDialog = ref(false);
+const helpSections = ["spectrum", "accel", "belts", "profile"] as const;
 
 // ── Controls ─────────────────────────────────────────────────────────────────
 const accelItems = computed(() => findAccelerometers(machineStore.model));
@@ -661,11 +691,9 @@ async function measure(): Promise<void> {
 }
 
 // ── Verify loop & orientation ────────────────────────────────────────────────
-const orientationResult = ref<{ solution: OrientationSolution; accelId: string; coupling: number } | null>(null);
+// orientationResult + multiResults live in ./state so results persist across leaving the page.
 const verifyResult = ref<{ reduction: number; before: { labels: Array<number>; data: Array<number> }; after: Array<number> } | null>(null);
 const appliedFit = ref<{ name: ShaperName; freq: number } | null>(null);
-/** Calibration run across several axes: each axis's analysis, overlaid for comparison. */
-const multiResults = ref<Array<{ axis: string } & ReturnType<typeof parse>>>([]);
 
 /** Re-run the same sweep with the shaper ACTIVE and compare energy before/after. */
 async function verify(): Promise<void> {
@@ -793,9 +821,29 @@ const multiRows = computed(() => multiResults.value.map((r) => {
 		axis: r.axis,
 		color: AXIS_COLORS[r.axis.toUpperCase()] ?? "#888888",
 		peak: r.analysis.peaks[0]?.freq.toFixed(1) ?? "—",
-		fit: best ? { name: best.name, display: SHAPER_DISPLAY_NAMES[best.name], freq: best.freq, reduction: (100 - best.vibrations * 100).toFixed(0) } : null,
+		fit: best ? { name: best.name, display: SHAPER_DISPLAY_NAMES[best.name], freq: best.freq, reduction: (100 - best.vibrations * 100).toFixed(0), maxAccel: best.maxAccel } : null,
 	};
 }));
+
+/** Open one axis of a multi-axis run in the full single-axis view (shaper compare, response, verify). */
+function inspectAxis(axis: string): void {
+	const r = multiResults.value.find((m) => m.axis === axis);
+	if (!r) {
+		return;
+	}
+	selectedAxis.value = r.axis;
+	result.value = { axis: r.axis, when: new Date(), source: t("multi.fromOverlay", { axis: r.axis }), analysis: r.analysis, capture: r.capture };
+	overlay.value = r.analysis.recommendation?.best.name ?? "mzv";
+	chartMode.value = "spectrum";
+	appliedFit.value = null;
+	verifyResult.value = null;
+}
+
+/** Return from a single-axis inspection to the multi-axis overlay (keeps the overlay loaded). */
+function backToOverlay(): void {
+	result.value = null;
+	verifyResult.value = null;
+}
 
 function parse(csvText: string) {
 	const capture = parseAccelCsv(csvText);
@@ -917,19 +965,20 @@ async function loadSelectedCaptures(): Promise<void> {
 	if (picks.length === 0) {
 		return;
 	}
+	const hasBelt = picks.some((p) => p.kind === "belta" || p.kind === "beltb");
+	const beltA = picks.find((p) => p.kind === "belta");
+	const beltB = picks.find((p) => p.kind === "beltb");
+	if (hasBelt && (!beltA || !beltB)) {
+		error.value = t("captures.needBeltPair"); // invalid selection: keep the dialog open
+		return;
+	}
+	captureBrowser.value = false; // selection is valid — dismiss the dialog right away
 	error.value = "";
 	try {
-		if (picks.some((p) => p.kind === "belta" || p.kind === "beltb")) {
-			const a = picks.find((p) => p.kind === "belta");
-			const b = picks.find((p) => p.kind === "beltb");
-			if (!a || !b) {
-				error.value = t("captures.needBeltPair");
-				return;
-			}
-			const [ca, cb] = await Promise.all([downloadRemote(a.name), downloadRemote(b.name)]);
+		if (beltA && beltB) {
+			const [ca, cb] = await Promise.all([downloadRemote(beltA.name), downloadRemote(beltB.name)]);
 			resetResults();
 			beltResult.value = compareBelts(parseAccelCsv(ca), parseAccelCsv(cb), 150, 5);
-			captureBrowser.value = false;
 			return;
 		}
 		const sweeps = picks.filter((p) => p.kind === "sweep");
@@ -940,7 +989,6 @@ async function loadSelectedCaptures(): Promise<void> {
 			}
 			resetResults();
 			multiResults.value = collected.map((c) => ({ axis: c.axis, analysis: c.analysis, capture: c.capture }));
-			captureBrowser.value = false;
 			return;
 		}
 		const one = picks[0];
@@ -949,7 +997,6 @@ async function loadSelectedCaptures(): Promise<void> {
 			selectedAxis.value = one.axis;
 		}
 		finish(parse(await downloadRemote(one.name)), one.name);
-		captureBrowser.value = false;
 	} catch (e) {
 		error.value = (e as Error).message || String(e);
 	}

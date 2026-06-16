@@ -66,9 +66,32 @@
 	},
 	"multi": {
 		"headline": "Per-axis resonance",
-		"row": "peak {peak} Hz → {shaper} {'@'} {freq} Hz (−{reduction}%)",
+		"row": "peak {peak} Hz → {shaper} {'@'} {freq} Hz (−{reduction}%) · max accel {accel} mm/s²",
 		"quiet": "no significant resonance (peak {peak} Hz)",
-		"note": "RepRapFirmware applies one input shaper (M593) to all axes — pick the axis whose resonance you most want to suppress, or apply the lowest frequency."
+		"note": "RepRapFirmware applies one input shaper (M593) to all axes — pick the axis whose resonance you most want to suppress, or apply the lowest frequency.",
+		"inspect": "Inspect",
+		"back": "All axes",
+		"fromOverlay": "{axis} axis (from overlay)"
+	},
+	"help": {
+		"title": "How to read these graphs",
+		"open": "Help",
+		"spectrum": {
+			"heading": "Frequency response (calibration / excite)",
+			"body": "The curve shows how strongly the toolhead vibrates at each frequency while it is driven across the band. Each hump is a resonance; the tallest one limits print quality. The recommended input shaper is tuned to cancel that main peak — the dashed line is the shaper's response (how much it lets through at each frequency) and the shaded 'after shaper' curve is what remains once it is applied. A good result flattens the big peak without raising vibration elsewhere."
+		},
+		"accel": {
+			"heading": "Maximum acceleration",
+			"body": "Stronger shaping (a lower frequency or more smoothing) rounds sharp corners more, so each shaper has an acceleration above which the smoothing becomes objectionable. The suggested max acceleration is a safe ceiling for the chosen shaper — set it in your slicer or with M204 and keep printing acceleration at or below it."
+		},
+		"belts": {
+			"heading": "Belt tension (CoreXY)",
+			"body": "The two belts are excited separately and overlaid. Curves that sit on top of each other mean the belts are matched. If one curve is the same shape but scaled up or down, the belts are at different tensions — adjust and re-test. If the curves have different shapes or peaks, the difference is mechanical (a bearing, idler or belt path), not tension."
+		},
+		"profile": {
+			"heading": "Vibration vs speed",
+			"body": "Vibration energy is measured across a range of travel speeds. Tall points are speeds that hit a resonance; avoid those feedrates (or fix the underlying resonance with input shaping) and prefer the quieter speeds."
+		}
 	},
 	"captures": {
 		"title": "Captured data",

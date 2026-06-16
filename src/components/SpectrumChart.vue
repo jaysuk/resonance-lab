@@ -25,6 +25,15 @@ const props = defineProps<{
 const canvas = ref<HTMLCanvasElement | null>(null);
 let chart: Chart | null = null;
 
+/** Format a value with ~3 significant figures so tiny normalised numbers don't round to 0. */
+function fmtVal(v: number): string {
+	if (!isFinite(v) || v === 0) {
+		return "0";
+	}
+	const abs = Math.abs(v);
+	return abs >= 1 ? v.toFixed(2) : v.toFixed(Math.min(8, 2 - Math.floor(Math.log10(abs))));
+}
+
 function buildDatasets(): { labels: Array<number>; datasets: Array<ChartDataset<"line">> } {
 	const a = props.analysis;
 	const rec = a.recommendation;
@@ -101,7 +110,7 @@ function render(): void {
 			interaction: { mode: "index", intersect: false },
 			plugins: {
 				legend: { position: "top", labels: { boxWidth: 14, usePointStyle: true } },
-				tooltip: { callbacks: { title: (items) => `${items[0].label} Hz` } },
+				tooltip: { callbacks: { title: (items) => `${items[0].label} Hz`, label: (c) => `${c.dataset.label}: ${fmtVal(c.parsed.y as number)}` } },
 			},
 			scales: {
 				x: { title: { display: true, text: "Frequency (Hz)" }, ticks: { maxTicksLimit: 14 } },

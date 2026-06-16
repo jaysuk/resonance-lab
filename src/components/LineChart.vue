@@ -17,6 +17,15 @@ const props = defineProps<{
 const canvas = ref<HTMLCanvasElement | null>(null);
 let chart: Chart | null = null;
 
+/** Format a value with ~3 significant figures so tiny normalised numbers don't round to 0. */
+function fmtVal(v: number): string {
+	if (!isFinite(v) || v === 0) {
+		return "0";
+	}
+	const abs = Math.abs(v);
+	return abs >= 1 ? v.toFixed(2) : v.toFixed(Math.min(8, 2 - Math.floor(Math.log10(abs))));
+}
+
 function render(): void {
 	const ctx = canvas.value?.getContext?.("2d");
 	if (!ctx) {
@@ -36,7 +45,10 @@ function render(): void {
 		options: {
 			responsive: true, maintainAspectRatio: false, animation: false,
 			interaction: { mode: "index", intersect: false },
-			plugins: { legend: { position: "top", labels: { boxWidth: 14, usePointStyle: true } } },
+			plugins: {
+				legend: { position: "top", labels: { boxWidth: 14, usePointStyle: true } },
+				tooltip: { callbacks: { label: (c) => `${c.dataset.label}: ${fmtVal(c.parsed.y as number)}` } },
+			},
 			scales: {
 				x: { title: { display: true, text: props.xTitle }, ticks: { maxTicksLimit: 14 } },
 				y: { title: { display: true, text: props.yTitle }, beginAtZero: true, ticks: { maxTicksLimit: 8 } },

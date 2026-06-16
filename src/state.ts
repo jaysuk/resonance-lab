@@ -21,6 +21,12 @@ export const measurementRunning = ref(false);
 
 import type { BeltComparison } from "./analysis/belts";
 import type { VibrationProfile } from "./analysis/vibration";
+import type { OrientationSolution } from "./analysis/axesMap";
 
 export const beltResult = ref<BeltComparison | null>(null);
 export const profileResult = ref<VibrationProfile | null>(null);
+
+/** One axis of a multi-axis calibration run (kept here so the overlay survives leaving the page). */
+export interface MultiAxisResult { axis: string; analysis: CaptureAnalysis; capture: AccelCapture }
+export const multiResults = ref<Array<MultiAxisResult>>([]);
+export const orientationResult = ref<{ solution: OrientationSolution; accelId: string; coupling: number } | null>(null);
