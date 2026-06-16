@@ -45,7 +45,7 @@
 			<v-divider vertical />
 
 			<!-- Task panel -->
-			<div class="flex-grow-1 d-flex flex-column pa-3" style="min-width: 0">
+			<div class="flex-grow-1 d-flex flex-column pa-3" style="min-width: 0; overflow-y: auto">
 				<!-- What this task does -->
 				<div class="d-flex align-center ga-2">
 					<v-icon size="large">{{ activeTask.icon }}</v-icon>
@@ -155,7 +155,7 @@
 							<v-btn value="spectrogram" size="small" prepend-icon="mdi-blur-linear">{{ $t("plugins.resonanceLab.results.spectrogram") }}</v-btn>
 						</v-btn-toggle>
 					</div>
-					<div class="flex-grow-1" style="min-height: 320px">
+					<div class="flex-grow-1" style="min-height: 420px">
 						<SpectrogramView v-if="!verifyResult && chartMode === 'spectrogram' && spectrogram" :spec="spectrogram" />
 						<LineChart v-else-if="verifyResult"
 								   :labels="verifyResult.before.labels"
@@ -214,7 +214,7 @@
 							</div>
 						</v-card-text>
 					</v-card>
-					<div class="flex-grow-1" style="min-height: 320px">
+					<div class="flex-grow-1" style="min-height: 420px">
 						<LineChart :labels="beltChart.labels" :series="beltChart.series"
 								   x-title="Frequency (Hz)" y-title="Vibration" />
 					</div>
@@ -231,7 +231,7 @@
 							</div>
 						</v-card-text>
 					</v-card>
-					<div class="flex-grow-1" style="min-height: 320px">
+					<div class="flex-grow-1" style="min-height: 420px">
 						<LineChart :labels="profileChart.labels" :series="profileChart.series"
 								   x-title="Speed (mm/s)" y-title="Vibration energy" />
 					</div>
@@ -256,7 +256,7 @@
 							<div class="text-caption text-medium-emphasis mt-2">{{ $t("plugins.resonanceLab.multi.note") }}</div>
 						</v-card-text>
 					</v-card>
-					<div class="flex-grow-1" style="min-height: 320px">
+					<div class="flex-grow-1" style="min-height: 420px">
 						<LineChart :labels="multiChart.labels" :series="multiChart.series"
 								   x-title="Frequency (Hz)" y-title="Vibration (normalised)" />
 					</div>
@@ -438,12 +438,32 @@ function awaitAccelRun(accelId: string, from: number, timeoutMs: number): Promis
 	});
 }
 
+/** Machine motion status from the object model (e.g. "idle", "busy", "processing", "paused"). */
+function machineStatus(): string {
+	return String((machineStore.model as { state?: { status?: string } }).state?.status ?? "");
+}
+
+/** Resolve once motion has stopped (status idle/paused/halted). Resolves on timeout — never blocks the run. */
+function awaitMotionIdle(timeoutMs: number): Promise<void> {
+	const stopped = () => ["idle", "off", "halted", "paused", "pausing", "cancelling"].includes(machineStatus());
+	return new Promise((resolve) => {
+		if (stopped()) {
+			resolve();
+			return;
+		}
+		const stop = watch(machineStatus, () => { if (stopped()) { cleanup(); resolve(); } });
+		const timer = setTimeout(() => { cleanup(); resolve(); }, timeoutMs);
+		function cleanup(): void { stop(); clearTimeout(timer); }
+	});
+}
+
 const io: MachineIO = {
 	sendCode: async (code) => String(await machineStore.sendCode(code) ?? ""),
 	upload: async (path, content) => { await machineStore.upload({ filename: path, content }, false, false, true); },
 	download: async (path) => String(await machineStore.download({ filename: path, type: "text" }, false, false, false)),
 	accelRuns: (accelId) => readAccelRuns(accelId),
 	awaitAccelRun: (accelId, from, timeoutMs) => awaitAccelRun(accelId, from, timeoutMs),
+	awaitIdle: (timeoutMs) => awaitMotionIdle(timeoutMs),
 };
 
 /** Centre of the selected axis's travel, from the object model (fallback: current position). */
@@ -561,7 +581,8 @@ async function measure(): Promise<void> {
 			const runB = await runBeltCapture(io, { ...opts, belt: "b" });
 			const b = await downloadCapture(io, runB);
 			lastResult.value = null;
-			beltResult.value = compareBelts(parseAccelCsv(a), parseAccelCsv(b));
+			// Analyse (and chart) only the swept band, with a little margin either side.
+			beltResult.value = compareBelts(parseAccelCsv(a), parseAccelCsv(b), adv.value.beltEnd + 10, Math.max(0, adv.value.beltStart - 5));
 		} else if (method.value === "profile") {
 			const entries: Array<{ speed: number; capture: ReturnType<typeof parseAccelCsv> }> = [];
 			for (let speed = adv.value.speedMin; speed <= adv.value.speedMax; speed += Math.max(1, adv.value.speedStep)) {

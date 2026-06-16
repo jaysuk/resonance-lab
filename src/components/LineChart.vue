@@ -39,7 +39,7 @@ function render(): void {
 			plugins: { legend: { position: "top", labels: { boxWidth: 14, usePointStyle: true } } },
 			scales: {
 				x: { title: { display: true, text: props.xTitle }, ticks: { maxTicksLimit: 14 } },
-				y: { title: { display: true, text: props.yTitle }, ticks: { display: false } },
+				y: { title: { display: true, text: props.yTitle }, beginAtZero: true, ticks: { maxTicksLimit: 8 } },
 			},
 		},
 	});
@@ -51,5 +51,5 @@ onBeforeUnmount(() => { chart?.destroy(); chart = null; });
 </script>
 
 <style scoped>
-.rlab-chart { position: relative; width: 100%; height: 100%; min-height: 320px; }
+.rlab-chart { position: relative; width: 100%; height: 100%; min-height: 420px; }
 </style>

@@ -28,6 +28,13 @@ export interface MachineIO {
 	accelRuns?(accelId: string): number;
 	/** Resolve once the run counter for `accelId` rises above `from`; reject after `timeoutMs`. */
 	awaitAccelRun?(accelId: string, from: number, timeoutMs: number): Promise<void>;
+	/**
+	 * Resolve once the machine's motion has finished (object-model status back to idle). The recorder
+	 * can close its file mid-motion if the sample count is reached before the moves end, so we also
+	 * wait for the motion to actually stop before treating the capture as complete (and before showing
+	 * results / starting the next axis). Optional; resolves on timeout rather than failing the capture.
+	 */
+	awaitIdle?(timeoutMs: number): Promise<void>;
 }
 
 export interface AccelerometerRef {
@@ -224,6 +231,13 @@ export async function downloadCapture(io: MachineIO, run: CaptureRun, timeoutMs?
 			// Counter never advanced (firmware error / disconnect / unhomed abort): fall through and
 			// make a best-effort read so the parser can surface the real problem.
 			ticked = false;
+		}
+		// The recorder may close its file before the moves finish (sample count reached mid-motion);
+		// wait for the machine to actually stop so we don't advance / show results while it's moving.
+		if (io.awaitIdle) {
+			try {
+				await io.awaitIdle(budget);
+			} catch { /* idle detection unavailable - proceed */ }
 		}
 		// Once the counter ticks the file is closed; a few quick reads cover filesystem visibility lag.
 		let lastText = "";

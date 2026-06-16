@@ -23,13 +23,17 @@ export interface BeltComparison {
 	verdict: BeltVerdict;
 }
 
-function bandOf(capture: AccelCapture, maxFreq: number): { freqs: Float64Array; psd: Float64Array } {
+function bandOf(capture: AccelCapture, minFreq: number, maxFreq: number): { freqs: Float64Array; psd: Float64Array } {
 	const { freqs, psdSum } = welchPsd(capture.channels, capture.samplingRate);
-	let n = 0;
-	while (n < freqs.length && freqs[n] <= maxFreq) {
-		n++;
+	let lo = 0;
+	while (lo < freqs.length && freqs[lo] < minFreq) {
+		lo++;
 	}
-	return { freqs: freqs.slice(0, n), psd: psdSum.slice(0, n) };
+	let hi = lo;
+	while (hi < freqs.length && freqs[hi] <= maxFreq) {
+		hi++;
+	}
+	return { freqs: freqs.slice(lo, hi), psd: psdSum.slice(lo, hi) };
 }
 
 /** Linear resample of (xs, ys) onto the target xs grid. */
@@ -49,9 +53,11 @@ function resample(xs: Float64Array, ys: Float64Array, target: Float64Array): Flo
 	return out;
 }
 
-export function compareBelts(a: AccelCapture, b: AccelCapture, maxFreq = 200): BeltComparison {
-	const A = bandOf(a, maxFreq);
-	const Braw = bandOf(b, maxFreq);
+export function compareBelts(a: AccelCapture, b: AccelCapture, maxFreq = 200, minFreq = 0): BeltComparison {
+	// Restrict to the excited band: outside the swept range both belts only show noise, which both
+	// inflates the shape-similarity (matching noise) and stretches the chart across empty spectrum.
+	const A = bandOf(a, minFreq, maxFreq);
+	const Braw = bandOf(b, minFreq, maxFreq);
 	const psdB = a.samplingRate === b.samplingRate ? Braw.psd : resample(Braw.freqs, Braw.psd, A.freqs);
 
 	// Pearson correlation = shape similarity independent of overall amplitude.
@@ -96,6 +102,6 @@ export function compareBelts(a: AccelCapture, b: AccelCapture, maxFreq = 200): B
 }
 
 /** Convenience: compare straight from two capture CSV texts. */
-export function compareBeltCsvs(csvA: string, csvB: string, maxFreq = 200): BeltComparison {
-	return compareBelts(parseAccelCsv(csvA), parseAccelCsv(csvB), maxFreq);
+export function compareBeltCsvs(csvA: string, csvB: string, maxFreq = 200, minFreq = 0): BeltComparison {
+	return compareBelts(parseAccelCsv(csvA), parseAccelCsv(csvB), maxFreq, minFreq);
 }

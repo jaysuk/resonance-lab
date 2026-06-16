@@ -105,7 +105,7 @@ function render(): void {
 			},
 			scales: {
 				x: { title: { display: true, text: "Frequency (Hz)" }, ticks: { maxTicksLimit: 14 } },
-				y: { title: { display: true, text: "Vibration (normalised)" }, ticks: { display: false } },
+				y: { title: { display: true, text: "Vibration (normalised)" }, beginAtZero: true, ticks: { maxTicksLimit: 8 } },
 				y1: {
 					position: "right", min: 0, max: 1.05, grid: { drawOnChartArea: false },
 					title: { display: true, text: "Shaper response" },
@@ -128,6 +128,6 @@ onBeforeUnmount(() => {
 	position: relative;
 	width: 100%;
 	height: 100%;
-	min-height: 320px;
+	min-height: 420px;
 }
 </style>
