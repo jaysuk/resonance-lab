@@ -349,14 +349,17 @@ import { SHAPER_DISPLAY_NAMES, type ShaperName } from "./analysis/shapers";
 import { buildVibrationProfile } from "./analysis/vibration";
 import { parseAccelCsv } from "./capture/csv";
 import {
-	downloadCapture, findAccelerometers, runBeltCapture, runFixedExcitation, runNativeCapture,
+	downloadCapture, findAccelerometers, measureBeltMotion, runBeltCapture, runFixedExcitation, runNativeCapture,
 	runSpeedPointCapture, runSweepCapture, type MachineIO,
 } from "./capture/orchestrator";
 import { computeSpectrogram } from "./analysis/stft";
 import LineChart from "./components/LineChart.vue";
 import SpectrogramView from "./components/SpectrogramView.vue";
 import SpectrumChart from "./components/SpectrumChart.vue";
-import { beltResult, lastResult, measurementRunning, multiResults, orientationResult, profileResult } from "./state";
+import {
+	beltResult, lastResult, measurementRunning, method, multiResults, orientationResult, profileResult,
+	selectedAxes, selectedAxis, type CaptureMethod,
+} from "./state";
 import { applyUpdateNow, runUpdateCheck, updateApplying, updatePendingReload, updateState } from "./updateCheck";
 
 onMounted(() => { void runUpdateCheck(); });
@@ -393,13 +396,9 @@ const axisItems = computed(() => {
 	const letters = axes.filter((a) => a.visible !== false && a.letter).map((a) => a.letter!);
 	return letters.length > 0 ? letters : ["X", "Y"];
 });
-const selectedAxis = ref("X");
-// Calibration can sweep several axes in one go and overlay them (RRF still applies a single global
-// shaper, so this is for comparison + choosing which resonance to target).
-const selectedAxes = ref<Array<string>>(["X", "Y"]);
-
-type Method = "sweep" | "move" | "custom" | "belts" | "profile" | "excite" | "axescheck";
-const method = ref<Method>("sweep");
+// selectedAxis / selectedAxes / method live in ./state so the chosen task + axes (and the matching
+// result) persist across leaving the page. Calibration can sweep several axes and overlay them.
+type Method = CaptureMethod;
 
 const adv = ref({
 	startFreq: 5, endFreq: 135, hzPerSec: 1, maxSmoothing: 0,
@@ -638,9 +637,13 @@ async function measure(): Promise<void> {
 				startFreq: adv.value.beltStart, endFreq: adv.value.beltEnd, hzPerSec: adv.value.beltHz,
 				expectedSampleRate: sampleRate,
 			};
-			const runA = await runBeltCapture(io, { ...opts, belt: "a" });
+			// The CoreXY diagonal sweep finishes well before its kinematic estimate, so a count-based
+			// recording over-samples ~20s into idle. Time the real motion once and size both belts to it.
+			const motionSec = await measureBeltMotion(io, { ...opts, belt: "a" });
+			const samples = motionSec > 0 ? Math.min(200000, Math.ceil((motionSec + 1.5) * sampleRate)) : undefined;
+			const runA = await runBeltCapture(io, { ...opts, belt: "a", samples });
 			const a = await downloadCapture(io, runA);
-			const runB = await runBeltCapture(io, { ...opts, belt: "b" });
+			const runB = await runBeltCapture(io, { ...opts, belt: "b", samples });
 			const b = await downloadCapture(io, runB);
 			lastResult.value = null;
 			// Analyse (and chart) only the swept band, with a little margin either side.

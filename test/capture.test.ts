@@ -205,3 +205,22 @@ describe("orientation solver (3.6-prototype algorithm)", () => {
 		expect(sol.conflicts).toEqual(["Y"]);
 	});
 });
+
+describe("belt recording sizing", () => {
+	const beltOpts = { accelerometer: { id: "0", label: "MB" }, belt: "a" as const, centerX: 100, centerY: 100, startFreq: 15, endFreq: 95, hzPerSec: 2 };
+
+	it("runBeltCapture honours an explicit samples override (measured motion time)", async () => {
+		const { runBeltCapture } = await import("../src/capture/orchestrator");
+		const codes: Array<string> = [];
+		const io = { sendCode: async (c: string) => { codes.push(c); return "ok"; }, upload: async () => {}, download: async () => "" };
+		await runBeltCapture(io, { ...beltOpts, samples: 1234 });
+		expect(codes.some((c) => c.includes("S1234 "))).toBe(true);
+	});
+
+	it("measureBeltMotion falls back to 0 when the move returns instantly (no real motion to time)", async () => {
+		const { measureBeltMotion } = await import("../src/capture/orchestrator");
+		const io = { sendCode: async () => "ok", upload: async () => {}, download: async () => "" };
+		// In the test env sendCode is instant, so the elapsed time is ~0 → unreliable → caller falls back.
+		expect(await measureBeltMotion(io, beltOpts)).toBe(0);
+	});
+});

@@ -139,11 +139,12 @@ export interface BeltCaptureOptions {
 	hzPerSec?: number;
 	maxAccel?: number;
 	expectedSampleRate?: number;
+	/** Override the recording length (samples). Used when the real motion time has been measured. */
+	samples?: number;
 }
 
-/** Run one belt's diagonal swept excitation; call twice (belt a, belt b) and compareBelts the CSVs. */
-export async function runBeltCapture(io: MachineIO, options: BeltCaptureOptions): Promise<CaptureRun> {
-	const program = generateSweep({
+function beltProgram(options: BeltCaptureOptions): SweepProgram {
+	return generateSweep({
 		axis: "X",
 		center: options.centerX,
 		startFreq: options.startFreq,
@@ -152,15 +153,37 @@ export async function runBeltCapture(io: MachineIO, options: BeltCaptureOptions)
 		maxAccel: options.maxAccel,
 		secondary: { axis: "Y", center: options.centerY, scale: options.belt === "a" ? 1 : -1 },
 	});
+}
+
+/** Run one belt's diagonal swept excitation; call twice (belt a, belt b) and compareBelts the CSVs. */
+export async function runBeltCapture(io: MachineIO, options: BeltCaptureOptions): Promise<CaptureRun> {
+	const program = beltProgram(options);
 	const name = captureName(`belt${options.belt}`, "xy");
 	const csvPath = `${CAPTURE_DIR}/${name}`;
 	const progPath = sweepProgramPath(name);
 	await io.upload(progPath, program.lines.join("\n") + "\n");
 	const rate = options.expectedSampleRate ?? 1000;
-	const samples = Math.min(200000, Math.ceil((program.durationSec + 2) * rate));
+	const samples = options.samples ?? Math.min(200000, Math.ceil((program.durationSec + 2) * rate));
 	const runsBefore = io.accelRuns?.(options.accelerometer.id);
 	await sendChecked(io, `M400 M956 P${options.accelerometer.id} S${samples} A0 F"${name}" M98 P"${progPath}"`);
 	return { csvPath, program, accelId: options.accelerometer.id, runsBefore };
+}
+
+/**
+ * Time the diagonal belt motion once, WITHOUT recording. The kinematic estimate over-states CoreXY
+ * diagonal moves (they finish well before `program.durationSec`), so M956 sized to the estimate keeps
+ * sampling far into idle time. `M98` blocks until the moves complete, so the elapsed wall-clock time
+ * is the real motion duration; the caller sizes both belt recordings to it. Returns 0 when the timing
+ * looks unreliable (e.g. the code returned before the motion finished) so the caller can fall back.
+ */
+export async function measureBeltMotion(io: MachineIO, options: BeltCaptureOptions): Promise<number> {
+	const program = beltProgram(options);
+	const progPath = sweepProgramPath(captureName("beltprobe", "xy"));
+	await io.upload(progPath, program.lines.join("\n") + "\n");
+	const t0 = Date.now();
+	await sendChecked(io, `M400 M98 P"${progPath}"`);
+	const sec = (Date.now() - t0) / 1000;
+	return sec > program.durationSec * 0.15 ? sec : 0;
 }
 
 export interface NativeCaptureOptions {
