@@ -21,8 +21,16 @@
 			</v-btn>
 			<v-btn icon="mdi-help-circle-outline" variant="text" size="small" :title="$t('plugins.resonanceLab.help.open')" @click="helpDialog = true" />
 			<v-btn icon="mdi-bug-outline" variant="text" size="small" :title="$t('plugins.resonanceLab.controls.diagnostics')" @click="downloadDiagnostics" />
+			<v-btn icon="mdi-information-outline" variant="text" size="small" title="About, updates & diagnostics" @click="aboutOpen = true" />
 			<input ref="filePicker" type="file" accept=".csv" class="d-none" @change="loadLocalCsv">
 		</div>
+
+		<AboutDialog v-model="aboutOpen" plugin-id="ResonanceLab" title="Resonance Lab"
+			:description="aboutDescription" :model="machineStore.model"
+			repo="https://github.com/jaysuk/resonance-lab"
+			:update-available="updateState?.updateAvailable ?? false" :latest-version="updateState?.latestVersion"
+			:checking="checking" :applying="updateApplying" :pending-reload="pendingReload" :auto-check="autoCheck"
+			@check-update="onCheckUpdate" @apply-update="applyUpdateNow" @toggle-auto-check="onToggleAutoCheck" />
 		<v-divider />
 
 		<div class="d-flex flex-grow-1" style="min-height: 0">
@@ -49,7 +57,7 @@
 				</div>
 
 				<!-- Self-update offer -->
-				<v-alert v-if="updatePendingReload" type="success" variant="tonal" density="compact" class="mb-3">
+				<v-alert v-if="pendingReload" type="success" variant="tonal" density="compact" class="mb-3">
 					{{ $t("plugins.resonanceLab.update.installed") }}
 					<template #append><v-btn size="small" color="success" prepend-icon="mdi-restart" @click="reload">{{ $t("plugins.resonanceLab.update.reload") }}</v-btn></template>
 				</v-alert>
@@ -340,7 +348,7 @@ import { useMachineStore } from "@/stores/machine";
 import { LogLevel, useUiStore } from "@/stores/ui";
 import i18n from "@/i18n";
 
-import { buildReport, downloadReport, HelpTip } from "dwc-plugin-runtime";
+import { AboutDialog, buildReport, downloadReport, HelpTip } from "dwc-plugin-runtime";
 
 import { compareBelts } from "./analysis/belts";
 import { analyzeAxisBurst, detectVerticalAxis, solveOrientation } from "./analysis/axesMap";
@@ -360,12 +368,18 @@ import {
 	beltResult, lastResult, measurementRunning, method, multiResults, orientationResult, profileResult,
 	selectedAxes, selectedAxis, type CaptureMethod,
 } from "./state";
-import { applyUpdateNow, runUpdateCheck, updateApplying, updatePendingReload, updateState } from "./updateCheck";
+import { applyUpdateNow, applying as updateApplying, checking, pendingReload, runUpdateCheck, setUpdateChecksEnabled, updateChecksEnabled, updateState } from "./updateCheck";
 
 onMounted(() => { void runUpdateCheck(); });
 const reload = () => window.location.reload();
 
 const machineStore = useMachineStore();
+
+const aboutOpen = ref(false);
+const autoCheck = ref(updateChecksEnabled());
+const aboutDescription = "Measures and tunes printer resonance / input shaping from accelerometer captures (Shake&Tune-style analysis).";
+function onCheckUpdate(): void { void runUpdateCheck({ force: true }); }
+function onToggleAutoCheck(v: boolean): void { autoCheck.value = v; setUpdateChecksEnabled(v); }
 const uiStore = useUiStore();
 const t = (k: string, args?: Record<string, unknown>) => i18n.global.t(`plugins.resonanceLab.${k}`, args ?? {});
 

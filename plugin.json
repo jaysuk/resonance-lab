@@ -2,7 +2,7 @@
 	"id": "ResonanceLab",
 	"name": "Resonance Lab",
 	"author": "James Skitt",
-	"version": "0.3.13",
+	"version": "0.3.14",
 	"license": "GPL-3.0-or-later",
 	"homepage": "https://github.com/jaysuk/resonance-lab",
 	"dwcVersion": "auto-major",
