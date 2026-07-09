@@ -4,7 +4,7 @@
  */
 import { type AccelCapture } from "../capture/csv";
 import { findPeaks, type ResonancePeak } from "./peaks";
-import { findBestShaper, MAX_FREQ, normalizeToFrequencies, type RecommendationResult } from "./recommend";
+import { findBestShaper, MAX_FREQ, normalizeToFrequencies, TEST_DAMPING_RATIOS, type RecommendationResult } from "./recommend";
 import { welchPsd, type PsdResult } from "./spectrum";
 
 export interface CaptureAnalysis {
@@ -25,7 +25,6 @@ export interface CaptureAnalysis {
 export interface AnalyseOptions {
 	maxFreq?: number;
 	dampingRatio?: number;
-	maxSmoothing?: number;
 	scv?: number;
 }
 
@@ -53,12 +52,16 @@ export function analyseCapture(capture: AccelCapture, options: AnalyseOptions = 
 	const peaks = bandMax > SILENCE_FLOOR ? findPeaks(bandFreqs, bandPsd) : [];
 
 	// Feed the measured damping ratio of the dominant resonance into the fit when it resolved -
-	// a machine-specific ratio beats the generic default for shaper frequency selection.
+	// a machine-specific ratio beats the generic default for shaper frequency selection, and is
+	// also added to the worst-case test set so the fit's residual-vibration figure covers the
+	// machine's actual ζ, not just the generic pessimistic bracket.
 	const measuredZeta = peaks[0]?.dampingRatio;
+	const zetaValid = measuredZeta !== undefined && measuredZeta >= 0.02 && measuredZeta <= 0.3;
 	const recommendation = peaks.length > 0
 		? findBestShaper(spectrum.freqs, normalized, {
 			...options,
-			dampingRatio: options.dampingRatio ?? (measuredZeta && measuredZeta >= 0.02 && measuredZeta <= 0.3 ? measuredZeta : undefined),
+			dampingRatio: options.dampingRatio ?? (zetaValid ? measuredZeta : undefined),
+			testDampingRatios: zetaValid ? Array.from(new Set([...TEST_DAMPING_RATIOS, measuredZeta])) : undefined,
 		})
 		: null;
 

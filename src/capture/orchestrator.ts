@@ -35,6 +35,23 @@ export interface MachineIO {
 	 * results / starting the next axis). Optional; resolves on timeout rather than failing the capture.
 	 */
 	awaitIdle?(timeoutMs: number): Promise<void>;
+	/**
+	 * Resolve once the machine's motion status has left the idle set (object-model status becomes
+	 * "busy"/"processing"/etc). Used to time a move by wall clock from when motion actually starts
+	 * rather than from when `sendCode` merely returns (which does not reliably block until a long
+	 * macro finishes - see `runBeltCapture`). Optional; resolves on timeout otherwise.
+	 */
+	awaitBusy?(timeoutMs: number): Promise<void>;
+	/**
+	 * Delete a file (e.g. a per-run uploaded program that's no longer needed). Optional and
+	 * best-effort - callers swallow failures, since RRF may briefly still hold the file open.
+	 */
+	delete?(path: string): Promise<void>;
+	/**
+	 * Create a directory (e.g. the program-file folder, before the first upload each run). Optional
+	 * and best-effort - callers swallow failures (it may already exist).
+	 */
+	makeDirectory?(path: string): Promise<void>;
 }
 
 export interface AccelerometerRef {
@@ -60,6 +77,34 @@ export function findAccelerometers(model: unknown): Array<AccelerometerRef> {
 	return found;
 }
 
+/**
+ * Parse the real sample rate (Hz) from an M955 status report, e.g. RRF's own wording:
+ * "Accelerometer 0:0 type LIS3DH with orientation 20 samples at 1344Hz with 10-bit resolution, ...".
+ * Anchored on "samples at" first so an unrelated number elsewhere in the report (board address,
+ * orientation, resolution, SPI frequency) can never be mistaken for the sample rate; falls back to
+ * the first bare "<n> Hz" if the firmware's wording ever changes. Returns 0 if nothing parses.
+ */
+export function parseAccelRateFromReport(reply: string): number {
+	const anchored = /samples\s+at\s+(\d+(?:\.\d+)?)\s*Hz/i.exec(reply);
+	const m = anchored ?? /(\d+(?:\.\d+)?)\s*Hz/i.exec(reply);
+	return m ? Math.round(parseFloat(m[1])) : 0;
+}
+
+/**
+ * Best-effort file delete: swallows all failures (RRF may briefly still hold the file open, or the
+ * IO may not implement `delete` at all, e.g. unit tests). Used to clean up per-run uploaded program
+ * files once they're no longer needed, so `0:/sys` doesn't accumulate one `.g` file per capture.
+ */
+async function deleteQuiet(io: MachineIO, path: string | undefined): Promise<void> {
+	if (!path || !io.delete) {
+		return;
+	}
+	try {
+		await io.delete(path);
+	} catch {
+		// best-effort - not fatal
+	}
+}
 
 /** Send a code and fail loudly if the firmware replied with an error (sendCode resolves either way). */
 async function sendChecked(io: MachineIO, code: string): Promise<void> {
@@ -73,17 +118,39 @@ async function sendChecked(io: MachineIO, code: string): Promise<void> {
  * Program files are PER-RUN: the firmware holds the macro file open while M98 executes, and
  * sendCode does NOT reliably block until a long macro completes - overwriting a shared filename
  * for the next run fails with "Cannot delete file because it is open" (live-printer finding).
+ *
+ * Uploaded into a dedicated subfolder (default `DEFAULT_PROGRAM_DIR`), not bare `0:/sys` - that
+ * directory otherwise holds the machine's own config/homing files and shouldn't accumulate one
+ * generated `.g` per capture alongside them. Configurable per-caller so the plugin's own setting can
+ * override it; the folder is created (best-effort, idempotent) before the first upload each run.
  */
-export function sweepProgramPath(captureName: string): string {
-	return `0:/sys/${captureName.replace(/\.csv$/, "")}.g`;
+export const DEFAULT_PROGRAM_DIR = "0:/sys/resonanceLab";
+
+export function sweepProgramPath(captureName: string, dir: string = DEFAULT_PROGRAM_DIR): string {
+	return `${dir}/${captureName.replace(/\.csv$/, "")}.g`;
 }
 export const CAPTURE_DIR = "0:/sys/accelerometer";
+
+/** Best-effort directory creation: swallows failures (e.g. it already exists). */
+async function ensureDir(io: MachineIO, dir: string): Promise<void> {
+	if (!io.makeDirectory) {
+		return;
+	}
+	try {
+		await io.makeDirectory(dir);
+	} catch {
+		// already exists, or the firmware/connector otherwise rejected it - not fatal, upload will
+		// surface a real problem (e.g. a genuinely missing/invalid path) on its own.
+	}
+}
 
 export interface SweepCaptureOptions extends SweepOptions {
 	/** Which accelerometer to record from. */
 	accelerometer: AccelerometerRef;
 	/** Expected sample rate (Hz) used to size the capture; the CSV reports the real one. */
 	expectedSampleRate?: number;
+	/** Directory the generated program file is uploaded to. Defaults to DEFAULT_PROGRAM_DIR. */
+	programDir?: string;
 }
 
 export interface CaptureRun {
@@ -95,6 +162,14 @@ export interface CaptureRun {
 	accelId?: string;
 	/** Run counter sampled just before arming; completion = counter rising above this. */
 	runsBefore?: number;
+	/** Per-run uploaded program file (if any) - downloadCapture best-effort deletes it once done. */
+	progPath?: string;
+	/**
+	 * Real motion duration (seconds), measured concurrently while an unsized belt recording ran (see
+	 * `runBeltCapture`). Undefined when the recording was precisely sized already, or when the
+	 * busy/idle signals needed to measure it weren't available.
+	 */
+	motionSec?: number;
 }
 
 /** Capture file name: stable prefix + axis + timestamp, so runs never overwrite each other. */
@@ -113,7 +188,8 @@ export async function runSweepCapture(io: MachineIO, options: SweepCaptureOption
 	const name = captureName("sweep", options.axis);
 	const csvPath = `${CAPTURE_DIR}/${name}`;
 
-	const progPath = sweepProgramPath(name);
+	const progPath = sweepProgramPath(name, options.programDir);
+	await ensureDir(io, options.programDir ?? DEFAULT_PROGRAM_DIR);
 	await io.upload(progPath, program.lines.join("\n") + "\n");
 
 	// Size the capture to the program duration plus margin for the ring-down tail.
@@ -125,7 +201,7 @@ export async function runSweepCapture(io: MachineIO, options: SweepCaptureOption
 	// snapshot the run counter first and let downloadCapture wait for it to tick.
 	const runsBefore = io.accelRuns?.(options.accelerometer.id);
 	await sendChecked(io, `M400 M956 P${options.accelerometer.id} S${samples} A0 F"${name}" M98 P"${progPath}"`);
-	return { csvPath, program, accelId: options.accelerometer.id, runsBefore };
+	return { csvPath, program, accelId: options.accelerometer.id, runsBefore, progPath };
 }
 
 export interface BeltCaptureOptions {
@@ -141,6 +217,8 @@ export interface BeltCaptureOptions {
 	expectedSampleRate?: number;
 	/** Override the recording length (samples). Used when the real motion time has been measured. */
 	samples?: number;
+	/** Directory the generated program file is uploaded to. Defaults to DEFAULT_PROGRAM_DIR. */
+	programDir?: string;
 }
 
 function beltProgram(options: BeltCaptureOptions): SweepProgram {
@@ -155,35 +233,75 @@ function beltProgram(options: BeltCaptureOptions): SweepProgram {
 	});
 }
 
-/** Run one belt's diagonal swept excitation; call twice (belt a, belt b) and compareBelts the CSVs. */
+/** The kinematic (worst-case) duration estimate for a belt sweep - the recording size `runBeltCapture` falls back to before the real motion time is known. */
+export function beltEstimatedDurationSec(options: BeltCaptureOptions): number {
+	return beltProgram(options).durationSec;
+}
+
+/**
+ * Run one belt's diagonal swept excitation; call twice (belt a, belt b) and compareBelts the CSVs.
+ *
+ * Sizing: pass `options.samples` when the real motion duration is already known (from a previous
+ * self-timed run at the same parameters, or a cached value - see ResonanceLabPage.vue) to record
+ * precisely with no waste. Leave it undefined to have THIS run size itself generously (the kinematic
+ * estimate, which over-states CoreXY diagonal moves) and self-time the REAL motion concurrently via
+ * the object model's busy/idle transition (`MachineIO.awaitBusy`/`awaitIdle`) - not a separate
+ * throwaway probe move beforehand (that used to record/move the same belt profile twice in a row).
+ * Motion is confirmed to have actually started (busy) before waiting for idle, because calling
+ * `awaitIdle` while the machine is still idle (not yet started moving) would otherwise resolve
+ * immediately with a false zero. The returned `motionSec` lets the caller crop the downloaded
+ * capture to the real duration (`cropCaptureToDuration` in ./csv) and size the OTHER belt precisely,
+ * so only the very first (unsized) belt run pays the over-record cost - and only once per set of
+ * sweep parameters, if the caller caches `motionSec` (RRF has no way to stop an in-progress M956
+ * recording early, so this self-timed-oversize approach is the only way to avoid a separate probe
+ * motion without risking truncating the real data).
+ */
 export async function runBeltCapture(io: MachineIO, options: BeltCaptureOptions): Promise<CaptureRun> {
 	const program = beltProgram(options);
 	const name = captureName(`belt${options.belt}`, "xy");
 	const csvPath = `${CAPTURE_DIR}/${name}`;
-	const progPath = sweepProgramPath(name);
+	const progPath = sweepProgramPath(name, options.programDir);
+	await ensureDir(io, options.programDir ?? DEFAULT_PROGRAM_DIR);
 	await io.upload(progPath, program.lines.join("\n") + "\n");
 	const rate = options.expectedSampleRate ?? 1000;
-	const samples = options.samples ?? Math.min(200000, Math.ceil((program.durationSec + 2) * rate));
 	const runsBefore = io.accelRuns?.(options.accelerometer.id);
-	await sendChecked(io, `M400 M956 P${options.accelerometer.id} S${samples} A0 F"${name}" M98 P"${progPath}"`);
-	return { csvPath, program, accelId: options.accelerometer.id, runsBefore };
+
+	if (options.samples !== undefined) {
+		await sendChecked(io, `M400 M956 P${options.accelerometer.id} S${options.samples} A0 F"${name}" M98 P"${progPath}"`);
+		return { csvPath, program, accelId: options.accelerometer.id, runsBefore, progPath };
+	}
+
+	const oversizedSamples = Math.min(200000, Math.ceil((program.durationSec + 2) * rate));
+	const sendPromise = sendChecked(io, `M400 M956 P${options.accelerometer.id} S${oversizedSamples} A0 F"${name}" M98 P"${progPath}"`);
+
+	let motionSec: number | undefined;
+	if (io.awaitBusy && io.awaitIdle) {
+		try {
+			await io.awaitBusy(5000);
+			const t1 = Date.now();
+			const budget = program.durationSec * 1.3 * 1000 + 10000;
+			await io.awaitIdle(budget);
+			motionSec = (Date.now() - t1) / 1000;
+		} catch {
+			// Never observed busy (very short move, or a status-polling gap) - motionSec stays
+			// undefined; the caller keeps the full oversized capture uncropped.
+		}
+	}
+	await sendPromise; // surface any G-code error
+	return { csvPath, program, accelId: options.accelerometer.id, runsBefore, progPath, motionSec };
 }
 
 /**
- * Time the diagonal belt motion once, WITHOUT recording. The kinematic estimate over-states CoreXY
- * diagonal moves (they finish well before `program.durationSec`), so M956 sized to the estimate keeps
- * sampling far into idle time. `M98` blocks until the moves complete, so the elapsed wall-clock time
- * is the real motion duration; the caller sizes both belt recordings to it. Returns 0 when the timing
- * looks unreliable (e.g. the code returned before the motion finished) so the caller can fall back.
+ * Cross-check a recording's sizing rate against the rate a CSV trailer actually reports. Belt A is
+ * sized from `readAccelRate`'s parse of the M955 report; if the firmware's real rate differs enough,
+ * belt B should be resized from the measured motion time at the ACTUAL rate rather than repeating
+ * the same over/under-record. Returns the original sample count unchanged when the two agree.
  */
-export async function measureBeltMotion(io: MachineIO, options: BeltCaptureOptions): Promise<number> {
-	const program = beltProgram(options);
-	const progPath = sweepProgramPath(captureName("beltprobe", "xy"));
-	await io.upload(progPath, program.lines.join("\n") + "\n");
-	const t0 = Date.now();
-	await sendChecked(io, `M400 M98 P"${progPath}"`);
-	const sec = (Date.now() - t0) / 1000;
-	return sec > program.durationSec * 0.15 ? sec : 0;
+export function resizeForActualRate(samples: number, motionSec: number, sizingRate: number, actualRate: number): number {
+	if (sizingRate <= 0 || Math.abs(actualRate - sizingRate) / sizingRate <= 0.1) {
+		return samples;
+	}
+	return Math.min(200000, Math.ceil((motionSec + 1.5) * actualRate));
 }
 
 export interface NativeCaptureOptions {
@@ -268,6 +386,7 @@ export async function downloadCapture(io: MachineIO, run: CaptureRun, timeoutMs?
 			try {
 				lastText = await io.download(run.csvPath);
 				if (hasCaptureTrailer(lastText)) {
+					await deleteQuiet(io, run.progPath); // capture confirmed complete - the program is spent
 					return lastText;
 				}
 			} catch {
@@ -289,6 +408,7 @@ export async function downloadCapture(io: MachineIO, run: CaptureRun, timeoutMs?
 		try {
 			lastText = await io.download(run.csvPath);
 			if (hasCaptureTrailer(lastText)) {
+				await deleteQuiet(io, run.progPath); // capture confirmed complete - the program is spent
 				return lastText;
 			}
 		} catch {
@@ -309,13 +429,14 @@ export async function runFixedExcitation(io: MachineIO, options: SweepCaptureOpt
 	const program = generateFixedExcitation(options);
 	const name = captureName(`fix${Math.round(options.freq)}`, options.axis);
 	const csvPath = `${CAPTURE_DIR}/${name}`;
-	const progPath = sweepProgramPath(name);
+	const progPath = sweepProgramPath(name, options.programDir);
+	await ensureDir(io, options.programDir ?? DEFAULT_PROGRAM_DIR);
 	await io.upload(progPath, program.lines.join("\n") + "\n");
 	const rate = options.expectedSampleRate ?? 1000;
 	const samples = Math.min(200000, Math.ceil((program.durationSec + 2) * rate));
 	const runsBefore = io.accelRuns?.(options.accelerometer.id);
 	await sendChecked(io, `M400 M956 P${options.accelerometer.id} S${samples} A0 F"${name}" M98 P"${progPath}"`);
-	return { csvPath, program, accelId: options.accelerometer.id, runsBefore };
+	return { csvPath, program, accelId: options.accelerometer.id, runsBefore, progPath };
 }
 
 export interface SpeedPointCaptureOptions {

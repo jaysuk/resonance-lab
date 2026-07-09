@@ -1,9 +1,9 @@
 /**
  * Resonance Lab - entry point.
  *
- * Input shaping & resonance analysis for RepRapFirmware, inspired by the Shake&Tune methodology
- * (measure -> analyse -> recommend -> verify). This file only wires the plugin into DWC; all real
- * behaviour lives in the components and (future) model modules.
+ * Input shaping & resonance analysis for RepRapFirmware (measure -> analyse -> recommend -> verify).
+ * This file only wires the plugin into DWC; all real behaviour lives in the components and (future)
+ * model modules.
  *
  * Surfaces:
  *  - a full PAGE under the Plugins menu (the lab: measurement runs, PSD graphs, recommendations),
@@ -15,11 +15,12 @@
 import { registerEmbeddableComponent, registerPluginMessages, registerRoute, unregisterEmbeddableComponent } from "@/plugins";
 import Events from "@/utils/events";
 
-import { installErrorCapture } from "dwc-plugin-runtime";
+import { clearAnnouncedUpdate, installErrorCapture } from "dwc-plugin-runtime";
 
 import en from "./i18n/en.json";
 import ResonanceLabPage from "./ResonanceLabPage.vue";
 import SummaryPanel from "./SummaryPanel.vue";
+import { runUpdateCheck } from "./updateCheck";
 
 /** Manifest id (plugin.json `id`) - what DWC uses for plugin load/unload events. */
 export const PLUGIN_ID = "ResonanceLab";
@@ -57,12 +58,18 @@ registerEmbeddableComponent({
 });
 
 // Diagnostics: capture window errors while the plugin is loaded so a bug report can carry them
-// (the settings/diagnostics UI lands with the first feature milestone).
+// (see the "Download diagnostics report" button in the page and the About dialog).
 const uninstallErrorCapture = installErrorCapture();
+
+// Throttled on-load update check (see ./updateCheck) - runs once per plugin load regardless of
+// whether the user ever opens the full page, so an embeddable-summary-panel-only install still
+// finds out about updates. Delayed so it doesn't compete with initial page load.
+setTimeout(() => { void runUpdateCheck({ notify: true }); }, 4000);
 
 Events.on("dwcPluginUnloaded", (id: string) => {
 	if (id === PLUGIN_ID) {
 		unregisterEmbeddableComponent(EMBEDDABLE_ID);
 		uninstallErrorCapture();
+		clearAnnouncedUpdate(PLUGIN_ID);
 	}
 });

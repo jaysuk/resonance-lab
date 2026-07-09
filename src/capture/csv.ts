@@ -61,3 +61,15 @@ export function parseAccelCsv(text: string): AccelCapture {
 	}
 	return { axes, channels, samplingRate, overflows };
 }
+
+/**
+ * Crop a capture to its first `durationSec` seconds, discarding any trailing samples recorded after
+ * the real motion ended. Used when a recording was deliberately oversized because the real duration
+ * wasn't known yet at arm time (see `runBeltCapture`'s self-timing mode) - the tail is otherwise
+ * near-silent idle-time data that would dilute the spectrum. A no-op if the capture is already
+ * shorter than `durationSec`.
+ */
+export function cropCaptureToDuration(capture: AccelCapture, durationSec: number): AccelCapture {
+	const keep = Math.min(capture.channels[0]?.length ?? 0, Math.max(0, Math.ceil(durationSec * capture.samplingRate)));
+	return { ...capture, channels: capture.channels.map((ch) => ch.slice(0, keep)) };
+}

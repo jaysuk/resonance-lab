@@ -1,10 +1,16 @@
 <!-- Spectrogram heatmap rendered straight to canvas (time -> x, frequency -> y, magnitude -> colour). -->
 <template>
 	<div class="rlab-spectrogram">
-		<canvas ref="canvas" />
+		<div class="rlab-spectrogram-row">
+			<div class="rlab-spectrogram-ylabel text-caption text-medium-emphasis">Frequency (Hz)</div>
+			<canvas ref="canvas" />
+		</div>
 		<div class="rlab-spectrogram-labels text-caption text-medium-emphasis">
-			<span>0s → {{ spec.times[spec.times.length - 1]?.toFixed(0) ?? 0 }}s</span>
-			<span>{{ spec.freqs[spec.freqs.length - 1]?.toFixed(0) ?? 0 }} Hz (top) → 0 Hz</span>
+			<span>0 Hz (bottom)</span>
+			<span>{{ spec.freqs[spec.freqs.length - 1]?.toFixed(0) ?? 0 }} Hz (top)</span>
+		</div>
+		<div class="text-caption text-medium-emphasis text-center mt-1">
+			Time (s): 0 → {{ spec.times[spec.times.length - 1]?.toFixed(0) ?? 0 }}
 		</div>
 	</div>
 </template>
@@ -62,6 +68,17 @@ watch(() => props.spec, render);
 
 <style scoped>
 .rlab-spectrogram { position: relative; width: 100%; height: 100%; min-height: 320px; display: flex; flex-direction: column; }
-.rlab-spectrogram canvas { flex: 1; width: 100%; height: 100%; image-rendering: auto; border-radius: 4px; }
+.rlab-spectrogram-row { flex: 1; min-height: 0; display: flex; align-items: stretch; }
+.rlab-spectrogram-ylabel {
+	writing-mode: vertical-lr;
+	transform: rotate(180deg);
+	white-space: nowrap;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding-right: 4px;
+	flex-shrink: 0;
+}
+.rlab-spectrogram canvas { flex: 1; min-width: 0; width: 100%; height: 100%; image-rendering: auto; border-radius: 4px; }
 .rlab-spectrogram-labels { display: flex; justify-content: space-between; margin-top: 2px; }
 </style>

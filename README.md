@@ -1,25 +1,25 @@
 # Resonance Lab
 
 Input shaping & resonance analysis plugin for [DuetWebControl](https://github.com/Duet3D/DuetWebControl)
-(RepRapFirmware), inspired by the methodology of [Shake&Tune](https://github.com/Frix-x/klippain-shaketune)
-from the Klipper world: **measure → analyse → recommend → verify**.
+(RepRapFirmware): **measure → analyse → recommend → verify**, computed entirely in the browser.
 
-> **Status: early development.** The scaffold is complete (page, embeddable panel, CI, release
-> automation); the measurement/analysis pipeline is being built. No releases are published yet —
-> they start once the plugin is feature-complete enough to be useful.
+Grab the latest release from the [Releases page](https://github.com/jaysuk/resonance-lab/releases) —
+download the ZIP and install it via **Settings → General → Plugins → Install Plugin** in DuetWebControl.
 
-## What it will do
+## What it does
 
 - **Measure** — run controlled excitation moves and capture accelerometer samples (`M955`/`M956`)
-  per axis / belt.
+  per axis / belt, optionally at a specific Z height.
 - **Analyse** — compute power spectral density, find resonance peaks, compare belts, flag anomalies.
-- **Recommend** — suggest the best input-shaper type and frequency (`M593`) with predicted smoothing
-  and remaining vibration.
+- **Recommend** — suggest the input-shaper type and frequency (`M593`) that removes the most
+  residual vibration, weighing every measured axis at once when more than one was swept.
 - **Verify** — re-measure with the shaper applied and confirm the ringing is gone before saving.
 
-This is a wholly new Vue 3 implementation — not a port of the stock Input Shaping plugin — informed
-by Shake&Tune's methodology and the lessons from the
-[Flexible Layouts](https://github.com/jaysuk/Flexible-Layouts) plugin work.
+Generated test G-code is uploaded to its own folder (`0:/sys/resonanceLab` by default, configurable
+in Settings) rather than bare `0:/sys` — captured measurement data itself always lands in
+`0:/sys/accelerometer`, which is fixed by the firmware and can't be relocated.
+
+This is a wholly new Vue 3 implementation — not a port of the stock Input Shaping plugin.
 
 ## Integration
 
@@ -46,6 +46,10 @@ DWC_DIR=/path/to/DuetWebControl npm run typecheck
 DWC_DIR=/path/to/DuetWebControl npm run verify-build   # produces ResonanceLab-<version>.zip
 ```
 
+On Windows, `build.bat` wraps the same checkout-relative build (edit `DWC_DIR`/`PLUGIN_ID` at the
+top if your checkout lives elsewhere) and drops the ZIP in the repo root, ready to install via
+**Settings → General → Plugins → Install plugin**.
+
 Commits follow [Conventional Commits](https://www.conventionalcommits.org/) — the release changelog
 is generated from them.
 
@@ -59,11 +63,6 @@ git tag v<version> && git push origin v<version>
 
 CI builds the ZIP against DWC, generates the changelog, and publishes the GitHub Release with the
 machine-readable `dwc-plugin-update` metadata the in-plugin update checker uses.
-
-## Credits
-
-- [Shake&Tune](https://github.com/Frix-x/klippain-shaketune) by Félix Boisselier (Frix-x) for the
-  measurement/analysis methodology this plugin adapts to RepRapFirmware.
 
 ## License
 

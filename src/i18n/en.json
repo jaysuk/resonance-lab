@@ -3,7 +3,6 @@
 	"title": "Resonance Lab",
 	"notConnected": "Connect to your machine to check for an accelerometer.",
 	"accelMissing": "No accelerometer found in the object model. Configure one with M955 to run measurements.",
-	"measuring": "Measuring the {axis} axis — the machine will oscillate. Keep clear until it finishes.",
 	"overflows": "The accelerometer reported {count} sample overflow(s) — results may be unreliable. Try a lower sample rate (M955) or a shorter run.",
 	"notHomed": "Home all axes before measuring — the test shakes the machine and needs a known position.",
 	"emptyState": "No measurement yet",
@@ -12,22 +11,29 @@
 		"accelerometer": "Accelerometer",
 		"axis": "Axis",
 		"axes": "Axes",
-		"method": "Method",
 		"measure": "Measure",
-		"advanced": "Advanced options",
-		"advancedHint": "Defaults suit almost every machine. The frequency sweep covers the whole band in one run.",
-		"maxSmoothing": "Max smoothing (mm)",
 		"customMoves": "Custom move profile (one G-code per line)",
 		"loadCsv": "Load CSV",
 		"captures": "Captures",
 		"noCaptures": "No capture files found",
-		"diagnostics": "Download diagnostics report"
+		"diagnostics": "Download diagnostics report",
+		"about": "About, updates & diagnostics",
+		"zHeight": "Z height (mm)"
 	},
 	"update": {
 		"available": "Resonance Lab {version} is available.",
 		"apply": "Update now",
 		"installed": "Update installed — reload to finish.",
 		"reload": "Reload"
+	},
+	"settings": {
+		"open": "Settings",
+		"title": "Resonance Lab settings",
+		"programDir": "Program files folder",
+		"programDirHint": "Where generated test G-code files are uploaded (e.g. sweep/belt programs) — kept separate from 0:/sys's own config/homing files. Captured CSV results always go to 0:/sys/accelerometer (fixed by the firmware).",
+		"programDirNote": "Captured measurement data itself always lands in 0:/sys/accelerometer — that location is set by the firmware and can't be changed. This setting only controls where the plugin's own generated test programs are uploaded.",
+		"reset": "Reset to default",
+		"done": "Done"
 	},
 	"methods": {
 		"sweep": "Frequency sweep (recommended)",
@@ -50,6 +56,9 @@
 		"notCoreXY": "Belt comparison needs CoreXY-style kinematics (diagonal belt paths). Your machine reports a different kinematics type.",
 		"beltA": "Belt A (X+Y)",
 		"beltB": "Belt B (X−Y)",
+		"phaseA": "recording belt A",
+		"phaseB": "recording belt B",
+		"phaseTiming": "first run at these settings — establishing the real motion time, reused next time",
 		"matched": "Belts are well matched ({sim}% similar)",
 		"matchedDetail": "Both belts resonate alike (peaks {peakA} / {peakB} Hz) with balanced energy — no tension adjustment needed.",
 		"tension": "Likely tension imbalance ({sim}% similar shape)",
@@ -66,9 +75,12 @@
 	},
 	"multi": {
 		"headline": "Per-axis resonance",
-		"row": "peak {peak} Hz → {shaper} {'@'} {freq} Hz (−{reduction}%) · max accel {accel} mm/s²",
+		"row": "peak {peak} Hz → {shaper} {'@'} {freq} Hz (−{reduction}%)",
 		"quiet": "no significant resonance (peak {peak} Hz)",
-		"note": "RepRapFirmware applies one input shaper (M593) to all axes — pick the axis whose resonance you most want to suppress, or apply the lowest frequency.",
+		"note": "The recommendation above already weighs every axis at once — the per-axis figures below are for comparison, or to deliberately target one axis instead.",
+		"combined": "Recommended for all axes: {shaper} {'@'} {freq} Hz",
+		"combinedDetail": "Weighed every axis at once: {perAxis}",
+		"agree": "Every axis already agreed on this shaper and frequency independently.",
 		"inspect": "Inspect",
 		"back": "All axes",
 		"fromOverlay": "{axis} axis (from overlay)"
@@ -78,11 +90,11 @@
 		"open": "Help",
 		"spectrum": {
 			"heading": "Frequency response (calibration / excite)",
-			"body": "The curve shows how strongly the toolhead vibrates at each frequency while it is driven across the band. Each hump is a resonance; the tallest one limits print quality. The recommended input shaper is tuned to cancel that main peak — the dashed line is the shaper's response (how much it lets through at each frequency) and the shaded 'after shaper' curve is what remains once it is applied. A good result flattens the big peak without raising vibration elsewhere."
+			"body": "The curve shows how strongly the toolhead vibrates at each frequency while it is driven across the band. Each hump is a resonance; the tallest one limits print quality. The recommended input shaper is tuned to cancel that main peak — the dashed line is the shaper's response (how much it lets through at each frequency) and the shaded 'after shaper' curve is what remains once it is applied. A good result flattens the big peak without raising vibration elsewhere. 'Show X/Y/Z channels' overlays each raw axis the accelerometer recorded (dotted lines) alongside the combined curve the recommendation actually runs on — useful for spotting vibration leaking into an axis you didn't mean to excite."
 		},
-		"accel": {
-			"heading": "Maximum acceleration",
-			"body": "Stronger shaping (a lower frequency or more smoothing) rounds sharp corners more, so each shaper has an acceleration above which the smoothing becomes objectionable. The suggested max acceleration is a safe ceiling for the chosen shaper — set it in your slicer or with M204 and keep printing acceleration at or below it."
+		"spectrogram": {
+			"heading": "Spectrogram (time vs frequency)",
+			"body": "Switch to this view (or use Excite one frequency) to see how the vibration response changes over the course of the test — time runs left to right, frequency runs bottom to top, and brightness shows how strongly the toolhead is vibrating. A real resonance shows up as a horizontal band that stays at the same frequency throughout; a diagonal streak that moves with time is just the sweep's own excitation frequency passing through, not a real resonance."
 		},
 		"belts": {
 			"heading": "Belt tension (CoreXY)",
@@ -96,6 +108,7 @@
 	"captures": {
 		"title": "Captured data",
 		"hint": "Tick one capture to view it, both belt files to compare tension, or several axis sweeps to overlay them.",
+		"loading": "Loading captured data…",
 		"refresh": "Refresh",
 		"selected": "{count} selected",
 		"load": "Load",
@@ -114,7 +127,7 @@
 	},
 	"results": {
 		"headline": "Apply {shaper} {'@'} {freq} Hz — removes ~{reduction}% of ringing",
-		"detail": "Estimated smoothing {smoothing} mm · keep acceleration below {accel} mm/s² · main resonance at {peak} Hz",
+		"detail": "Main resonance at {peak} Hz",
 		"quiet": "No significant resonance detected",
 		"quietDetail": "This capture shows no ringing worth shaping — either the machine is already well behaved, or the test didn't excite it. Try the frequency sweep method.",
 		"compare": "Compare shapers",
@@ -128,7 +141,8 @@
 		"spectrum": "Spectrum",
 		"spectrogram": "Spectrogram",
 		"samples": "{count} samples {'@'} {rate} Hz",
-		"peak": "peak {freq} Hz"
+		"peak": "peak {freq} Hz",
+		"showChannels": "Show X/Y/Z channels"
 	},
 	"panel": {
 		"ready": "Accelerometer ready",
@@ -146,10 +160,24 @@
 	},
 	"runningTask": "Running {task} — keep clear, the machine is moving.",
 	"durationLabel": "est. {dur}",
+	"cancel": {
+		"button": "Cancel",
+		"cancelling": "Cancelling…",
+		"notice": "Stopping after the current move finishes — RRF can't interrupt motion already in progress without a full emergency stop, so the machine will complete whatever it's doing right now.",
+		"title": "Measurement cancelled",
+		"notification": "Stopped before starting any further step. The machine finished whatever move was already in progress."
+	},
+	"confirmGcode": {
+		"title": "Run custom G-code?",
+		"body": "This will run the following G-code on your machine with the recorder armed. Review it before continuing:",
+		"confirm": "Run it",
+		"cancel": "Cancel",
+		"dontAskAgain": "Don't ask again this session"
+	},
 	"tasks": {
 		"sweep": {
 			"title": "Calibrate input shaping",
-			"blurb": "Sweeps the selected axis — or several at once, overlaid for comparison — through a frequency band and recommends the input shaper (M593) that removes the most ringing, with its predicted smoothing and a safe maximum acceleration.",
+			"blurb": "Sweeps the selected axis — or several at once, overlaid for comparison — through a frequency band and recommends the input shaper (M593) that removes the most ringing.",
 			"run": "Moves each selected axis back and forth near its centre · all axes must be homed"
 		},
 		"belts": {

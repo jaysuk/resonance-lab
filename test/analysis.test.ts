@@ -4,7 +4,7 @@ import { fftInPlace, rfft } from "../src/analysis/fft";
 import { findPeaks } from "../src/analysis/peaks";
 import {
 	estimateRemainingVibrations, estimateShaperResponse, estimateSmoothing, findBestShaper,
-	fitShaper, normalizeToFrequencies, recommendedMaxAccel,
+	findBestShaperCombined, fitShaper, normalizeToFrequencies,
 } from "../src/analysis/recommend";
 import { SHAPERS } from "../src/analysis/shapers";
 import { kaiserWindow, welchPsd, welchSegmentLength } from "../src/analysis/spectrum";
@@ -121,21 +121,12 @@ describe("recommendation engine", () => {
 		expect(estimateSmoothing(ei3.init(50, 0.1))).toBeGreaterThan(estimateSmoothing(mzv.init(50, 0.1)));
 	});
 
-	it("recommendedMaxAccel is higher for higher shaper frequencies", () => {
-		const mzv = SHAPERS.find((c) => c.name === "mzv")!;
-		const lo = recommendedMaxAccel(mzv.init(30, 0.1));
-		const hi = recommendedMaxAccel(mzv.init(80, 0.1));
-		expect(hi).toBeGreaterThan(lo);
-		expect(lo).toBeGreaterThan(0);
-	});
-
 	it("fitShaper homes in on the resonance frequency", () => {
 		const { freqs, psd } = syntheticPsd(52);
 		const norm = normalizeToFrequencies(freqs, psd);
 		const fit = fitShaper(SHAPERS.find((c) => c.name === "mzv")!, freqs, norm)!;
 		expect(Math.abs(fit.freq - 52)).toBeLessThan(6);
 		expect(fit.vibrations).toBeLessThan(0.25);
-		expect(fit.maxAccel).toBeGreaterThan(0);
 	});
 
 	it("findBestShaper returns a verdict that beats doing nothing, preferring simpler shapers", () => {
@@ -146,6 +137,17 @@ describe("recommendation engine", () => {
 		expect(rec.best.vibrations).toBeLessThan(0.3);
 		// With a clean single resonance, a heavy 3-hump EI must not displace simpler shapers.
 		expect(rec.best.name).not.toBe("ei3");
+	});
+
+	// Locks in the exact selection for a reference spectrum so removing the user-facing
+	// maxAccel/maxSmoothing fields (which never touched the score itself) can't silently
+	// change which shaper/frequency the engine actually recommends.
+	it("selection for a reference spectrum is stable (no maxAccel/maxSmoothing left to influence it)", () => {
+		const { freqs, psd } = syntheticPsd(45);
+		const norm = normalizeToFrequencies(freqs, psd);
+		const rec = findBestShaper(freqs, norm)!;
+		expect(rec.best.name).toBe("mzv");
+		expect(rec.best.freq).toBeCloseTo(46.8, 1);
 	});
 
 	it("estimateRemainingVibrations is ~1 for a no-op shaper and small for a tuned one", () => {
@@ -162,6 +164,70 @@ describe("recommendation engine", () => {
 		const out = normalizeToFrequencies(freqs, psd);
 		expect(out[2]).toBeCloseTo(10 / 50.1, 9);
 		expect(out[0]).toBeLessThan(out[2]); // hard-suppressed below 10 Hz
+	});
+});
+
+// ─── Combined multi-axis recommendation ──────────────────────────────────────
+
+describe("findBestShaperCombined", () => {
+	// findBestShaperCombined's per-shaper frequency scan runs once per axis passed in, so these are
+	// noticeably heavier than a single-axis findBestShaper call - under load the default 5000ms
+	// vitest timeout has been flaky here (observed 5.3-7.3s), so give these an explicit margin rather
+	// than relying on machine load being light every run.
+	it("agrees with the single-axis best when both axes share the same resonance", () => {
+		const { freqs, psd } = syntheticPsd(45);
+		const norm = normalizeToFrequencies(freqs, psd);
+		const single = findBestShaper(freqs, norm)!;
+		const combined = findBestShaperCombined([
+			{ axis: "X", freqBins: freqs, psd: norm },
+			{ axis: "Y", freqBins: freqs, psd: norm },
+		])!;
+		expect(combined.best.name).toBe(single.best.name);
+		expect(combined.best.freq).toBeCloseTo(single.best.freq, 0);
+	}, 20000);
+
+	it("leaves low residual vibration on both axes when they resonate at different frequencies", () => {
+		const x = syntheticPsd(40);
+		const y = syntheticPsd(55);
+		const combined = findBestShaperCombined([
+			{ axis: "X", freqBins: x.freqs, psd: normalizeToFrequencies(x.freqs, x.psd) },
+			{ axis: "Y", freqBins: y.freqs, psd: normalizeToFrequencies(y.freqs, y.psd) },
+		])!;
+		expect(combined.best.perAxis.length).toBe(2);
+		for (const p of combined.best.perAxis) {
+			expect(p.vibrations).toBeLessThan(0.4);
+		}
+		// The reported combined vibration is the worst of the two axes.
+		const maxPerAxis = Math.max(...combined.best.perAxis.map((p) => p.vibrations));
+		expect(combined.best.vibrations).toBeCloseTo(maxPerAxis, 9);
+	}, 20000);
+
+	// Quiet (no-peak) axes are filtered out by the caller before calling this engine (see
+	// ResonanceLabPage.vue's combinedSpectra) - a flat spectrum is still nonzero broadband "noise"
+	// the engine has no special-case for, so passing just the surviving axis must match findBestShaper.
+	it("with a single surviving axis, matches the single-axis recommendation", () => {
+		const peaked = syntheticPsd(50);
+		const norm = normalizeToFrequencies(peaked.freqs, peaked.psd);
+		const combined = findBestShaperCombined([{ axis: "X", freqBins: peaked.freqs, psd: norm }])!;
+		const single = findBestShaper(peaked.freqs, norm)!;
+		expect(combined.best.name).toBe(single.best.name);
+		expect(combined.best.freq).toBeCloseTo(single.best.freq, 0);
+	}, 20000);
+
+	it("handles axes with different-length frequency grids without crashing", () => {
+		const a = syntheticPsd(40);
+		const bFreqs = a.freqs.slice(0, 250); // shorter grid, same spacing
+		const bPsd = a.psd.slice(0, 250);
+		const combined = findBestShaperCombined([
+			{ axis: "X", freqBins: a.freqs, psd: normalizeToFrequencies(a.freqs, a.psd) },
+			{ axis: "Y", freqBins: bFreqs, psd: normalizeToFrequencies(bFreqs, bPsd) },
+		]);
+		expect(combined).not.toBeNull();
+		expect(combined!.best.vibrations).toBeLessThan(1);
+	});
+
+	it("returns null for an empty axis list", () => {
+		expect(findBestShaperCombined([])).toBeNull();
 	});
 });
 

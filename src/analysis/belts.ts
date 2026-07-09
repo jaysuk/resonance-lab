@@ -54,26 +54,53 @@ function resample(xs: Float64Array, ys: Float64Array, target: Float64Array): Flo
 }
 
 export function compareBelts(a: AccelCapture, b: AccelCapture, maxFreq = 200, minFreq = 0): BeltComparison {
-	// Restrict to the excited band: outside the swept range both belts only show noise, which both
-	// inflates the shape-similarity (matching noise) and stretches the chart across empty spectrum.
+	// Restrict to the (caller-supplied) swept band first, mainly so the chart doesn't stretch across
+	// empty spectrum outside it - the hump-only restriction below handles shape-similarity accuracy.
 	const A = bandOf(a, minFreq, maxFreq);
 	const Braw = bandOf(b, minFreq, maxFreq);
 	const psdB = a.samplingRate === b.samplingRate ? Braw.psd : resample(Braw.freqs, Braw.psd, A.freqs);
-
-	// Pearson correlation = shape similarity independent of overall amplitude.
 	const n = Math.min(A.psd.length, psdB.length);
+
+	// The requested band (minFreq/maxFreq, chart margin included) is usually wider than where either
+	// belt actually responds - both curves sit flat near zero before the sweep excites the machine's
+	// resonances and after it passes them. Correlating that flat, near-identical silence alongside the
+	// real hump inflates the shape-similarity score without saying anything about how well the belts
+	// actually match, so restrict the correlation to the hump itself: wherever EITHER belt clears 5%
+	// of the combined peak (same "significant" threshold `findPeaks` uses), from its first crossing to
+	// its last. energyRatio and the reported peaks still use the full requested band unchanged.
+	let combinedMax = 0;
+	for (let i = 0; i < n; i++) {
+		const c = A.psd[i] + psdB[i];
+		if (c > combinedMax) {
+			combinedMax = c;
+		}
+	}
+	const humpFloor = combinedMax * 0.05;
+	let humpLo = 0;
+	let humpHi = n - 1;
+	if (combinedMax > 0) {
+		while (humpLo < n && A.psd[humpLo] + psdB[humpLo] < humpFloor) {
+			humpLo++;
+		}
+		while (humpHi > humpLo && A.psd[humpHi] + psdB[humpHi] < humpFloor) {
+			humpHi--;
+		}
+	}
+
+	// Pearson correlation = shape similarity independent of overall amplitude, computed over the hump only.
 	let ma = 0;
 	let mb = 0;
-	for (let i = 0; i < n; i++) {
+	for (let i = humpLo; i <= humpHi; i++) {
 		ma += A.psd[i];
 		mb += psdB[i];
 	}
-	ma /= n;
-	mb /= n;
+	const humpN = humpHi - humpLo + 1;
+	ma /= humpN;
+	mb /= humpN;
 	let cov = 0;
 	let va = 0;
 	let vb = 0;
-	for (let i = 0; i < n; i++) {
+	for (let i = humpLo; i <= humpHi; i++) {
 		const da = A.psd[i] - ma;
 		const db = psdB[i] - mb;
 		cov += da * db;
@@ -81,7 +108,20 @@ export function compareBelts(a: AccelCapture, b: AccelCapture, maxFreq = 200, mi
 		vb += db * db;
 	}
 	const similarity = va > 0 && vb > 0 ? Math.max(0, cov / Math.sqrt(va * vb)) : 0;
-	const energyRatio = mb > 0 ? ma / mb : 1;
+
+	// energyRatio deliberately still uses the FULL requested band (not just the hump): it's a simple
+	// mean ratio, not a correlation, so the near-zero region outside the hump barely moves it either
+	// way - and keeping it on the full band means a shifted/narrowed hump on one belt (a real fault)
+	// still shows up as an amplitude imbalance rather than being cropped away with the silence.
+	let fullMa = 0;
+	let fullMb = 0;
+	for (let i = 0; i < n; i++) {
+		fullMa += A.psd[i];
+		fullMb += psdB[i];
+	}
+	fullMa /= n;
+	fullMb /= n;
+	const energyRatio = fullMb > 0 ? fullMa / fullMb : 1;
 
 	const peaksA = findPeaks(A.freqs, A.psd);
 	const peaksB = findPeaks(A.freqs, psdB);

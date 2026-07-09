@@ -14,12 +14,21 @@
 import { Chart, type ChartDataset } from "chart.js/auto";
 import { onBeforeUnmount, onMounted, ref, watch } from "vue";
 
+import { normalizeToFrequencies } from "../analysis/recommend";
 import type { CaptureAnalysis } from "../analysis/pipeline";
+
+/** Muted, distinguishable colours for the raw per-channel overlay - deliberately not reusing the
+ *  measured/after-shaper/response palette above so the two concerns stay visually separable. */
+const CHANNEL_COLORS = ["#ab47bc", "#26a69a", "#8d6e63", "#7e57c2", "#5c6bc0"];
 
 const props = defineProps<{
 	analysis: CaptureAnalysis;
 	/** Which shaper from the recommendation to overlay (name), defaults to the best one. */
 	overlayShaper?: string;
+	/** Raw per-channel axis labels from the capture (e.g. ["X","Y","Z"]), same order as analysis.spectrum.psd. */
+	channelLabels?: Array<string>;
+	/** Overlay each raw channel's own (frequency-weighted) spectrum alongside the combined "Measured" curve. */
+	showChannels?: boolean;
 }>();
 
 const canvas = ref<HTMLCanvasElement | null>(null);
@@ -85,6 +94,22 @@ function buildDatasets(): { labels: Array<number>; datasets: Array<ChartDataset<
 			yAxisID: "y1",
 		});
 	}
+
+	// Raw per-channel breakdown (X/Y/Z as captured) - same frequency-weighting as "Measured" (which is
+	// just their sum) so the curves sit on the same visual scale and add up to it.
+	if (props.showChannels && props.channelLabels?.length) {
+		a.spectrum.psd.forEach((psd, i) => {
+			const label = props.channelLabels![i] ?? `ch${i}`;
+			const weighted = normalizeToFrequencies(a.spectrum.freqs, psd);
+			const data = labels.map((_, j) => weighted[j] ?? 0);
+			datasets.push({
+				label,
+				data,
+				borderColor: CHANNEL_COLORS[i % CHANNEL_COLORS.length],
+				fill: false, pointRadius: 0, borderWidth: 1, borderDash: [2, 2], tension: 0.15,
+			});
+		});
+	}
 	return { labels, datasets };
 }
 
@@ -125,7 +150,7 @@ function render(): void {
 }
 
 onMounted(render);
-watch(() => [props.analysis, props.overlayShaper], render);
+watch(() => [props.analysis, props.overlayShaper, props.showChannels, props.channelLabels], render);
 onBeforeUnmount(() => {
 	chart?.destroy();
 	chart = null;

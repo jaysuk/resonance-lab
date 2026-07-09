@@ -19,9 +19,10 @@
 			<v-btn variant="text" prepend-icon="mdi-file-upload-outline" :disabled="running" @click="filePicker?.click()">
 				{{ $t("plugins.resonanceLab.controls.loadCsv") }}
 			</v-btn>
+			<v-btn icon="mdi-cog-outline" variant="text" size="small" :title="$t('plugins.resonanceLab.settings.open')" @click="settingsOpen = true" />
 			<v-btn icon="mdi-help-circle-outline" variant="text" size="small" :title="$t('plugins.resonanceLab.help.open')" @click="helpDialog = true" />
 			<v-btn icon="mdi-bug-outline" variant="text" size="small" :title="$t('plugins.resonanceLab.controls.diagnostics')" @click="downloadDiagnostics" />
-			<v-btn icon="mdi-information-outline" variant="text" size="small" title="About, updates & diagnostics" @click="aboutOpen = true" />
+			<v-btn icon="mdi-information-outline" variant="text" size="small" :title="$t('plugins.resonanceLab.controls.about')" @click="aboutOpen = true" />
 			<input ref="filePicker" type="file" accept=".csv" class="d-none" @change="loadLocalCsv">
 		</div>
 
@@ -31,11 +32,49 @@
 			:update-available="updateState?.updateAvailable ?? false" :latest-version="updateState?.latestVersion"
 			:checking="checking" :applying="updateApplying" :pending-reload="pendingReload" :auto-check="autoCheck"
 			@check-update="onCheckUpdate" @apply-update="applyUpdateNow" @toggle-auto-check="onToggleAutoCheck" />
+
+		<!-- Plugin settings -->
+		<v-dialog v-model="settingsOpen" max-width="520">
+			<v-card>
+				<v-card-title class="d-flex align-center">
+					<v-icon class="me-2">mdi-cog-outline</v-icon>{{ $t("plugins.resonanceLab.settings.title") }}
+				</v-card-title>
+				<v-card-text>
+					<v-text-field v-model="programDir" density="compact" variant="outlined"
+								  :label="$t('plugins.resonanceLab.settings.programDir')" :placeholder="DEFAULT_PROGRAM_DIR" hide-details="auto">
+						<template #append-inner><HelpTip :text="$t('plugins.resonanceLab.settings.programDirHint')" /></template>
+					</v-text-field>
+					<div class="text-caption text-medium-emphasis mt-2">{{ $t("plugins.resonanceLab.settings.programDirNote") }}</div>
+				</v-card-text>
+				<v-card-actions>
+					<v-btn variant="text" @click="programDir = DEFAULT_PROGRAM_DIR">{{ $t("plugins.resonanceLab.settings.reset") }}</v-btn>
+					<v-spacer />
+					<v-btn color="primary" variant="tonal" @click="settingsOpen = false">{{ $t("plugins.resonanceLab.settings.done") }}</v-btn>
+				</v-card-actions>
+			</v-card>
+		</v-dialog>
+		<v-dialog v-model="confirmGcodeOpen" max-width="520">
+			<v-card>
+				<v-card-title class="d-flex align-center">
+					<v-icon class="me-2" color="warning">mdi-alert-outline</v-icon>{{ $t("plugins.resonanceLab.confirmGcode.title") }}
+				</v-card-title>
+				<v-card-text>
+					<div class="mb-2">{{ $t("plugins.resonanceLab.confirmGcode.body") }}</div>
+					<pre class="rlab-gcode-preview">{{ adv.customMoves }}</pre>
+					<v-checkbox v-model="skipGcodeConfirm" density="compact" hide-details :label="$t('plugins.resonanceLab.confirmGcode.dontAskAgain')" />
+				</v-card-text>
+				<v-card-actions>
+					<v-btn variant="text" @click="confirmGcodeOpen = false">{{ $t("plugins.resonanceLab.confirmGcode.cancel") }}</v-btn>
+					<v-spacer />
+					<v-btn color="primary" variant="tonal" @click="confirmGcodeOpen = false; measure();">{{ $t("plugins.resonanceLab.confirmGcode.confirm") }}</v-btn>
+				</v-card-actions>
+			</v-card>
+		</v-dialog>
 		<v-divider />
 
 		<div class="d-flex flex-grow-1" style="min-height: 0">
 			<!-- Task rail: pick the job by what you want to achieve -->
-			<v-list nav density="compact" class="flex-shrink-0 py-2" style="width: 220px">
+			<v-list nav density="compact" class="flex-shrink-0 py-2 rlab-task-rail" style="width: 232px">
 				<v-list-subheader>{{ $t("plugins.resonanceLab.rail.goals") }}</v-list-subheader>
 				<v-list-item v-for="td in goalTasks" :key="td.id" :active="method === td.id" :disabled="running"
 							 :prepend-icon="td.icon" :title="$t(`plugins.resonanceLab.tasks.${td.id}.title`)" @click="selectTask(td.id)" />
@@ -92,6 +131,10 @@
 						<v-select v-else-if="activeTask.usesAxis" v-model="selectedAxis" :items="axisItems" density="compact" variant="outlined"
 								  hide-details style="max-width: 110px" :label="$t('plugins.resonanceLab.controls.axis')" :disabled="running" />
 						<v-chip v-else size="small" variant="tonal" prepend-icon="mdi-axis-arrow">{{ taskAxisNote }}</v-chip>
+						<v-text-field v-if="method !== 'axescheck'" v-model.number="adv.zHeight" type="number" density="compact" variant="outlined" clearable
+									  hide-details :label="$t('plugins.resonanceLab.controls.zHeight')" placeholder="current" style="max-width: 140px" :disabled="running">
+							<template #append-inner><HelpTip text="Move to this Z height (mm) before measuring. Leave blank to measure at the machine's current Z position." /></template>
+						</v-text-field>
 						<v-text-field v-if="activeTask.params.includes('startFreq')" v-model.number="adv.startFreq" type="number" density="compact" variant="outlined" hide-details label="Start (Hz)" style="max-width: 132px" :disabled="running"><template #append-inner><HelpTip text="Lowest frequency of the sweep, in Hz. Start a little below where you expect resonances (often 5–15 Hz)." /></template></v-text-field>
 						<v-text-field v-if="activeTask.params.includes('endFreq')" v-model.number="adv.endFreq" type="number" density="compact" variant="outlined" hide-details label="End (Hz)" style="max-width: 132px" :disabled="running"><template #append-inner><HelpTip text="Highest frequency of the sweep, in Hz. Cover the range your input shaper acts on (commonly up to ~100–150 Hz)." /></template></v-text-field>
 						<v-text-field v-if="activeTask.params.includes('hzPerSec')" v-model.number="adv.hzPerSec" type="number" density="compact" variant="outlined" hide-details label="Sweep (Hz/s)" style="max-width: 142px" :disabled="running"><template #append-inner><HelpTip text="How fast the sweep ramps through the frequency range, in Hz per second. Slower sweeps give cleaner data but take longer." /></template></v-text-field>
@@ -103,9 +146,8 @@
 						<v-text-field v-if="activeTask.params.includes('speedMin')" v-model.number="adv.speedMin" type="number" density="compact" variant="outlined" hide-details label="Min (mm/s)" style="max-width: 132px" :disabled="running"><template #append-inner><HelpTip text="Lowest test speed, in mm/s." /></template></v-text-field>
 						<v-text-field v-if="activeTask.params.includes('speedMax')" v-model.number="adv.speedMax" type="number" density="compact" variant="outlined" hide-details label="Max (mm/s)" style="max-width: 132px" :disabled="running"><template #append-inner><HelpTip text="Highest test speed, in mm/s." /></template></v-text-field>
 						<v-text-field v-if="activeTask.params.includes('speedStep')" v-model.number="adv.speedStep" type="number" density="compact" variant="outlined" hide-details label="Step (mm/s)" style="max-width: 132px" :disabled="running"><template #append-inner><HelpTip text="Speed increment between test runs, in mm/s." /></template></v-text-field>
-						<v-text-field v-if="activeTask.params.includes('maxSmoothing')" v-model.number="adv.maxSmoothing" type="number" step="0.01" density="compact" variant="outlined" hide-details :label="$t('plugins.resonanceLab.controls.maxSmoothing')" style="max-width: 172px" :disabled="running"><template #append-inner><HelpTip text="Upper limit on input-shaper smoothing the recommendation may use. Lower = sharper motion but less vibration reduction." /></template></v-text-field>
 						<v-spacer />
-						<v-btn color="primary" prepend-icon="mdi-play" :loading="running" :disabled="!canMeasure" @click="measure">
+						<v-btn color="primary" prepend-icon="mdi-play" :loading="running" :disabled="!canMeasure" @click="onMeasureClick">
 							{{ $t("plugins.resonanceLab.controls.measure") }}
 						</v-btn>
 					</div>
@@ -118,12 +160,31 @@
 
 				<!-- Progress -->
 				<v-alert v-if="running" type="info" variant="tonal" density="compact" class="mb-3">
-					<v-progress-circular indeterminate size="16" width="2" class="me-2" />
-					{{ $t("plugins.resonanceLab.runningTask", { task: $t(`plugins.resonanceLab.tasks.${method}.title`) }) }}
+					<div class="d-flex align-center ga-2">
+						<v-progress-circular indeterminate size="16" width="2" />
+						<span class="flex-grow-1">
+							{{ $t("plugins.resonanceLab.runningTask", { task: $t(`plugins.resonanceLab.tasks.${method}.title`) }) }}
+							<template v-if="method === 'belts' && beltPhase"> — {{ $t(`plugins.resonanceLab.belts.phase${beltPhase}`) }}</template>
+							<template v-if="method === 'belts' && beltEstablishingTiming"> ({{ $t('plugins.resonanceLab.belts.phaseTiming') }})</template>
+						</span>
+						<v-btn size="small" variant="text" :disabled="cancelRequested"
+							   :prepend-icon="cancelRequested ? undefined : 'mdi-stop-circle-outline'"
+							   @click="cancelRequested = true">
+							{{ cancelRequested ? $t("plugins.resonanceLab.cancel.cancelling") : $t("plugins.resonanceLab.cancel.button") }}
+						</v-btn>
+					</div>
+					<div v-if="cancelRequested" class="text-caption text-medium-emphasis mt-1">
+						{{ $t("plugins.resonanceLab.cancel.notice") }}
+					</div>
 				</v-alert>
+				<!-- Loading a saved capture: prominent, replaces whatever was on screen (already cleared) -->
+				<div v-if="loadingCapture" class="flex-grow-1 d-flex flex-column align-center justify-center text-medium-emphasis">
+					<v-progress-circular indeterminate size="56" width="4" color="primary" class="mb-4" />
+					<div class="text-h6">{{ $t("plugins.resonanceLab.captures.loading") }}</div>
+				</div>
 
 				<!-- Results: verdict + chart get all remaining space -->
-				<template v-if="result">
+				<template v-else-if="result">
 					<div v-if="multiResults.length" class="mb-2">
 						<v-btn size="small" variant="text" prepend-icon="mdi-arrow-left" @click="backToOverlay">
 							{{ $t("plugins.resonanceLab.multi.back") }}
@@ -155,7 +216,9 @@
 					<v-alert v-if="verifyResult" :type="verifyResult.reduction > 0.5 ? 'success' : 'warning'" variant="tonal" density="comfortable" class="mb-2">
 						{{ $t("plugins.resonanceLab.results.verified", { reduction: (verifyResult.reduction * 100).toFixed(0) }) }}
 					</v-alert>
-					<div v-if="!verifyResult && result.capture" class="d-flex justify-end mb-1">
+					<div v-if="!verifyResult && result.capture" class="d-flex align-center justify-end ga-3 mb-1">
+						<v-checkbox v-if="chartMode === 'spectrum' && result.capture.axes.length > 1" v-model="showChannels" density="compact" hide-details
+									:label="$t('plugins.resonanceLab.results.showChannels')" />
 						<v-btn-toggle v-model="chartMode" density="compact" variant="outlined" mandatory>
 							<v-btn value="spectrum" size="small" prepend-icon="mdi-chart-bell-curve">{{ $t("plugins.resonanceLab.results.spectrum") }}</v-btn>
 							<v-btn value="spectrogram" size="small" prepend-icon="mdi-blur-linear">{{ $t("plugins.resonanceLab.results.spectrogram") }}</v-btn>
@@ -170,7 +233,8 @@
 								   	{ label: $t('plugins.resonanceLab.results.after'), data: verifyResult.after, color: '#4caf50' },
 								   ]"
 								   x-title="Frequency (Hz)" y-title="Vibration (normalised)" />
-						<SpectrumChart v-else :analysis="result.analysis" :overlay-shaper="overlay" />
+						<SpectrumChart v-else :analysis="result.analysis" :overlay-shaper="overlay"
+									   :channel-labels="result.capture?.axes" :show-channels="showChannels" />
 					</div>
 
 					<div class="d-flex align-center flex-wrap ga-4 mt-2 text-caption text-medium-emphasis">
@@ -245,20 +309,36 @@
 
 				<!-- Multi-axis calibration overlay -->
 				<template v-else-if="multiResults.length && multiChart">
+					<v-card v-if="combinedSummary" variant="tonal" color="primary" class="mb-2">
+						<v-card-text class="d-flex align-center flex-wrap ga-3 py-3">
+							<v-icon size="large">mdi-check-decagram-outline</v-icon>
+							<div class="flex-grow-1">
+								<div class="text-subtitle-1 font-weight-medium">
+									{{ $t("plugins.resonanceLab.multi.combined", { shaper: combinedSummary.display, freq: combinedSummary.freq.toFixed(1) }) }}
+								</div>
+								<div class="text-body-2">
+									{{ combinedSummary.agrees ? $t("plugins.resonanceLab.multi.agree") : $t("plugins.resonanceLab.multi.combinedDetail", { perAxis: combinedSummary.perAxisText }) }}
+								</div>
+							</div>
+							<v-btn color="primary" prepend-icon="mdi-check" :loading="applying" :disabled="!isConnected" @click="applyShaperFit(combinedSummary.name, combinedSummary.freq)">
+								{{ $t("plugins.resonanceLab.results.apply", { shaper: combinedSummary.display }) }}
+							</v-btn>
+						</v-card-text>
+					</v-card>
 					<v-card variant="tonal" color="info" class="mb-3">
 						<v-card-text class="py-3">
 							<div class="text-subtitle-1 font-weight-medium mb-2">{{ $t("plugins.resonanceLab.multi.headline") }}</div>
 							<div v-for="row in multiRows" :key="row.axis" class="d-flex align-center ga-3 py-1">
 								<v-chip size="small" label variant="outlined" :style="{ borderColor: row.color, color: row.color }">{{ row.axis }}</v-chip>
-								<span class="text-body-2">
-									<template v-if="row.fit">{{ $t("plugins.resonanceLab.multi.row", { peak: row.peak, shaper: row.fit.display, freq: row.fit.freq.toFixed(1), reduction: row.fit.reduction, accel: row.fit.maxAccel }) }}</template>
+								<span class="text-body-2 text-medium-emphasis">
+									<template v-if="row.fit">{{ $t("plugins.resonanceLab.multi.row", { peak: row.peak, shaper: row.fit.display, freq: row.fit.freq.toFixed(1), reduction: row.fit.reduction }) }}</template>
 									<template v-else>{{ $t("plugins.resonanceLab.multi.quiet", { peak: row.peak }) }}</template>
 								</span>
 								<v-spacer />
 								<v-btn size="small" variant="text" prepend-icon="mdi-chart-bell-curve" @click="inspectAxis(row.axis)">
 									{{ $t("plugins.resonanceLab.multi.inspect") }}
 								</v-btn>
-								<v-btn v-if="row.fit" size="small" variant="tonal" prepend-icon="mdi-check" :loading="applying" :disabled="!isConnected" @click="applyShaperFit(row.fit.name, row.fit.freq)">
+								<v-btn v-if="row.fit" size="small" variant="text" prepend-icon="mdi-check" :loading="applying" :disabled="!isConnected" @click="applyShaperFit(row.fit.name, row.fit.freq)">
 									{{ $t("plugins.resonanceLab.results.apply", { shaper: row.fit.display }) }}
 								</v-btn>
 							</div>
@@ -306,11 +386,16 @@
 					<v-icon class="me-2">mdi-folder-open-outline</v-icon>
 					{{ $t("plugins.resonanceLab.captures.title") }}
 					<v-spacer />
-					<v-btn icon="mdi-refresh" variant="text" size="small" :title="$t('plugins.resonanceLab.captures.refresh')" @click="refreshRemoteCaptures" />
+					<v-progress-circular v-if="loadingCapture" indeterminate size="20" width="2" class="me-2" />
+					<v-btn icon="mdi-refresh" variant="text" size="small" :disabled="loadingCapture" :title="$t('plugins.resonanceLab.captures.refresh')" @click="refreshRemoteCaptures" />
 				</v-card-title>
 				<v-card-subtitle class="text-wrap">{{ $t("plugins.resonanceLab.captures.hint") }}</v-card-subtitle>
 				<v-card-text style="max-height: 60vh">
-					<div v-if="remoteFiles.length === 0" class="text-medium-emphasis py-6 text-center">{{ $t("plugins.resonanceLab.controls.noCaptures") }}</div>
+					<div v-if="loadingCapture && remoteFiles.length === 0" class="text-medium-emphasis py-6 text-center">
+						<v-progress-circular indeterminate size="24" width="2" class="mb-2" /><br>
+						{{ $t("plugins.resonanceLab.captures.loading") }}
+					</div>
+					<div v-else-if="remoteFiles.length === 0" class="text-medium-emphasis py-6 text-center">{{ $t("plugins.resonanceLab.controls.noCaptures") }}</div>
 					<template v-for="g in groupedCaptures" :key="g.day">
 						<div class="text-overline text-medium-emphasis mt-2">{{ g.day }}</div>
 						<v-list-item v-for="f in g.items" :key="f.name" class="px-0" @click="toggleFile(f.name)">
@@ -332,7 +417,7 @@
 					<span class="text-caption text-medium-emphasis ms-2">{{ $t("plugins.resonanceLab.captures.selected", { count: selectedFiles.length }) }}</span>
 					<v-spacer />
 					<v-btn variant="text" @click="captureBrowser = false">{{ $t("plugins.resonanceLab.captures.cancel") }}</v-btn>
-					<v-btn color="primary" :disabled="selectedFiles.length === 0" prepend-icon="mdi-download" @click="loadSelectedCaptures">
+					<v-btn color="primary" :disabled="selectedFiles.length === 0 || loadingCapture" prepend-icon="mdi-download" @click="loadSelectedCaptures">
 						{{ $t("plugins.resonanceLab.captures.load") }}
 					</v-btn>
 				</v-card-actions>
@@ -342,7 +427,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, ref, watch } from "vue";
 
 import { useMachineStore } from "@/stores/machine";
 import { LogLevel, useUiStore } from "@/stores/ui";
@@ -353,34 +438,58 @@ import { AboutDialog, buildReport, downloadReport, HelpTip } from "dwc-plugin-ru
 import { compareBelts } from "./analysis/belts";
 import { analyzeAxisBurst, detectVerticalAxis, solveOrientation } from "./analysis/axesMap";
 import { analyseCapture } from "./analysis/pipeline";
+import { findBestShaperCombined, type CombinedRecommendationResult } from "./analysis/recommend";
 import { SHAPER_DISPLAY_NAMES, type ShaperName } from "./analysis/shapers";
 import { buildVibrationProfile } from "./analysis/vibration";
-import { parseAccelCsv } from "./capture/csv";
+import { cropCaptureToDuration, parseAccelCsv } from "./capture/csv";
 import {
-	downloadCapture, findAccelerometers, measureBeltMotion, runBeltCapture, runFixedExcitation, runNativeCapture,
-	runSpeedPointCapture, runSweepCapture, type MachineIO,
+	beltEstimatedDurationSec, DEFAULT_PROGRAM_DIR, downloadCapture, findAccelerometers, parseAccelRateFromReport,
+	resizeForActualRate, runBeltCapture, runFixedExcitation, runNativeCapture, runSpeedPointCapture, runSweepCapture,
+	type MachineIO,
 } from "./capture/orchestrator";
 import { computeSpectrogram } from "./analysis/stft";
 import LineChart from "./components/LineChart.vue";
 import SpectrogramView from "./components/SpectrogramView.vue";
 import SpectrumChart from "./components/SpectrumChart.vue";
 import {
-	beltResult, lastResult, measurementRunning, method, multiResults, orientationResult, profileResult,
-	selectedAxes, selectedAxis, type CaptureMethod,
+	beltResult, combinedRec, lastResult, measurementRunning, method, multiResults, orientationResult,
+	profileResult, selectedAxes, selectedAxis, type CaptureMethod, type MultiAxisResult,
 } from "./state";
 import { applyUpdateNow, applying as updateApplying, checking, pendingReload, runUpdateCheck, setUpdateChecksEnabled, updateChecksEnabled, updateState } from "./updateCheck";
 
-onMounted(() => { void runUpdateCheck(); });
+// The on-load update check runs once from index.ts at plugin-load time (not here), so it still
+// happens for an embeddable-summary-panel-only install that never opens this page.
 const reload = () => window.location.reload();
 
 const machineStore = useMachineStore();
 
 const aboutOpen = ref(false);
 const autoCheck = ref(updateChecksEnabled());
-const aboutDescription = "Measures and tunes printer resonance / input shaping from accelerometer captures (Shake&Tune-style analysis).";
-function onCheckUpdate(): void { void runUpdateCheck({ force: true }); }
+const aboutDescription = "Measures and tunes printer resonance / input shaping from accelerometer captures.";
+function onCheckUpdate(): void { void runUpdateCheck({ force: true, notify: true }); }
 function onToggleAutoCheck(v: boolean): void { autoCheck.value = v; setUpdateChecksEnabled(v); }
 const uiStore = useUiStore();
+
+// ── Plugin-wide settings (program-file folder) ──────────────────────────────
+const settingsOpen = ref(false);
+const LS_PROGRAM_DIR = "resonanceLab.programDir";
+function loadProgramDir(): string {
+	try {
+		return localStorage.getItem(LS_PROGRAM_DIR) || DEFAULT_PROGRAM_DIR;
+	} catch {
+		return DEFAULT_PROGRAM_DIR;
+	}
+}
+const programDir = ref(loadProgramDir());
+/** The folder actually used for uploads - falls back to the default if the field is blank/whitespace. */
+const effectiveProgramDir = computed(() => programDir.value.trim() || DEFAULT_PROGRAM_DIR);
+watch(programDir, (v) => {
+	try {
+		localStorage.setItem(LS_PROGRAM_DIR, v);
+	} catch {
+		// storage disabled - not fatal, just won't persist across sessions
+	}
+});
 const t = (k: string, args?: Record<string, unknown>) => i18n.global.t(`plugins.resonanceLab.${k}`, args ?? {});
 
 const isConnected = computed(() => machineStore.isConnected);
@@ -390,7 +499,11 @@ const error = ref("");
 const applying = ref(false);
 const filePicker = ref<HTMLInputElement | null>(null);
 const helpDialog = ref(false);
-const helpSections = ["spectrum", "accel", "belts", "profile"] as const;
+const helpSections = ["spectrum", "spectrogram", "belts", "profile"] as const;
+/** Which belt is currently recording, so the progress alert can name it. */
+const beltPhase = ref<"A" | "B" | null>(null);
+/** True while belt A's own recording is also establishing the real motion timing (first run at these parameters - see the belts branch of measure()). */
+const beltEstablishingTiming = ref(false);
 
 // ── Controls ─────────────────────────────────────────────────────────────────
 const accelItems = computed(() => findAccelerometers(machineStore.model));
@@ -414,25 +527,53 @@ const axisItems = computed(() => {
 // result) persist across leaving the page. Calibration can sweep several axes and overlay them.
 type Method = CaptureMethod;
 
+const LS_Z_HEIGHT = "resonanceLab.zHeight";
+function loadZHeight(): number | null {
+	try {
+		const raw = localStorage.getItem(LS_Z_HEIGHT);
+		if (raw === null) {
+			return null;
+		}
+		const v = Number(raw);
+		return Number.isNaN(v) ? null : v;
+	} catch {
+		return null;
+	}
+}
+
 const adv = ref({
-	startFreq: 5, endFreq: 135, hzPerSec: 1, maxSmoothing: 0,
+	startFreq: 5, endFreq: 135, hzPerSec: 1,
 	beltStart: 15, beltEnd: 95, beltHz: 2,
 	exciteFreq: 40, exciteSeconds: 10,
 	speedMin: 30, speedMax: 180, speedStep: 30,
 	customMoves: "",
+	/** Move to this Z (mm) before measuring; null = leave Z at whatever it currently is. */
+	zHeight: loadZHeight() as number | null,
+});
+
+watch(() => adv.value.zHeight, (v) => {
+	try {
+		if (typeof v === "number" && !Number.isNaN(v)) {
+			localStorage.setItem(LS_Z_HEIGHT, String(v));
+		} else {
+			localStorage.removeItem(LS_Z_HEIGHT);
+		}
+	} catch {
+		// storage disabled - not fatal, just won't persist across sessions
+	}
 });
 
 // Each task is a self-contained job: its icon, whether it uses a single axis, and exactly which
 // parameters it exposes. The panel renders only these, so no irrelevant knob is ever shown.
 interface TaskDef { id: Method; group: "goal" | "diag"; icon: string; usesAxis: boolean; params: Array<string> }
 const TASKS: ReadonlyArray<TaskDef> = [
-	{ id: "sweep", group: "goal", icon: "mdi-tune-variant", usesAxis: true, params: ["startFreq", "endFreq", "hzPerSec", "maxSmoothing"] },
+	{ id: "sweep", group: "goal", icon: "mdi-tune-variant", usesAxis: true, params: ["startFreq", "endFreq", "hzPerSec"] },
 	{ id: "belts", group: "goal", icon: "mdi-scale-balance", usesAxis: false, params: ["beltStart", "beltEnd", "beltHz"] },
 	{ id: "profile", group: "goal", icon: "mdi-speedometer", usesAxis: true, params: ["speedMin", "speedMax", "speedStep"] },
 	{ id: "axescheck", group: "goal", icon: "mdi-axis-arrow", usesAxis: false, params: [] },
 	{ id: "excite", group: "diag", icon: "mdi-pulse", usesAxis: true, params: ["exciteFreq", "exciteSeconds"] },
-	{ id: "move", group: "diag", icon: "mdi-arrow-left-right", usesAxis: true, params: ["maxSmoothing"] },
-	{ id: "custom", group: "diag", icon: "mdi-code-braces", usesAxis: true, params: ["maxSmoothing", "customMoves"] },
+	{ id: "move", group: "diag", icon: "mdi-arrow-left-right", usesAxis: true, params: [] },
+	{ id: "custom", group: "diag", icon: "mdi-code-braces", usesAxis: true, params: ["customMoves"] },
 ];
 const goalTasks = computed(() => TASKS.filter((td) => td.group === "goal"));
 const diagTasks = computed(() => TASKS.filter((td) => td.group === "diag"));
@@ -451,6 +592,7 @@ function selectTask(id: Method): void {
 	orientationResult.value = null;
 	verifyResult.value = null;
 	multiResults.value = [];
+	combinedRec.value = null;
 	error.value = "";
 }
 
@@ -460,7 +602,14 @@ const durationEstimate = computed(() => {
 	let secs: number;
 	switch (method.value) {
 		case "sweep": secs = ((a.endFreq - a.startFreq) / Math.max(0.1, a.hzPerSec) + 6) * Math.max(1, selectedAxes.value.length); break;
-		case "belts": secs = 2 * ((a.beltEnd - a.beltStart) / Math.max(0.1, a.beltHz) + 8); break;
+		case "belts": {
+			// Always exactly 2 physical sweeps now (belt A self-times its own recording instead of a
+			// separate probe move - see the belts branch of measure()). On a cold cache, belt A may
+			// run a little longer than this estimate while it establishes the real motion time.
+			const perBelt = (a.beltEnd - a.beltStart) / Math.max(0.1, a.beltHz) + 8;
+			secs = 2 * perBelt;
+			break;
+		}
 		case "profile": {
 			let s = 0;
 			for (let v = a.speedMin; v <= a.speedMax; v += Math.max(1, a.speedStep)) {
@@ -477,7 +626,7 @@ const durationEstimate = computed(() => {
 	return rounded >= 90 ? `~${Math.round(rounded / 60)} min` : `~${rounded}s`;
 });
 
-const canMeasure = computed(() => isConnected.value && !running.value
+const canMeasure = computed(() => isConnected.value && !running.value && !loadingCapture.value
 	&& (selectedAccel.value !== null || accelItems.value.length > 0)
 	&& (method.value !== "sweep" || selectedAxes.value.length > 0));
 
@@ -532,6 +681,20 @@ function awaitMotionIdle(timeoutMs: number): Promise<void> {
 	});
 }
 
+/** Resolve once motion has actually started (status left the idle set); reject after `timeoutMs`. */
+function awaitMotionBusy(timeoutMs: number): Promise<void> {
+	const busy = () => !["idle", "off", "halted", "paused", "pausing", "cancelling"].includes(machineStatus());
+	return new Promise((resolve, reject) => {
+		if (busy()) {
+			resolve();
+			return;
+		}
+		const stop = watch(machineStatus, () => { if (busy()) { cleanup(); resolve(); } });
+		const timer = setTimeout(() => { cleanup(); reject(new Error("motion never started")); }, timeoutMs);
+		function cleanup(): void { stop(); clearTimeout(timer); }
+	});
+}
+
 const io: MachineIO = {
 	sendCode: async (code) => String(await machineStore.sendCode(code) ?? ""),
 	upload: async (path, content) => { await machineStore.upload({ filename: path, content }, false, false, true); },
@@ -539,6 +702,9 @@ const io: MachineIO = {
 	accelRuns: (accelId) => readAccelRuns(accelId),
 	awaitAccelRun: (accelId, from, timeoutMs) => awaitAccelRun(accelId, from, timeoutMs),
 	awaitIdle: (timeoutMs) => awaitMotionIdle(timeoutMs),
+	awaitBusy: (timeoutMs) => awaitMotionBusy(timeoutMs),
+	delete: async (path) => { await machineStore.delete(path); },
+	makeDirectory: async (path) => { await machineStore.makeDirectory(path); },
 };
 
 /** Centre of the selected axis's travel, from the object model (fallback: current position). */
@@ -557,6 +723,71 @@ function centerOf(letter: string): number {
 	const ax = axes.find((a) => a.letter === letter);
 	return ax && typeof ax.min === "number" && typeof ax.max === "number" && ax.max > ax.min
 		? Math.round((ax.min + ax.max) / 2) : 0;
+}
+
+/**
+ * Move to the user-set Z height (if any) before measuring. RRF's own M208 soft limits still apply to
+ * a normal G1 move (only G1/G0 H2 bypasses them), so an out-of-range value surfaces as a normal
+ * G-code error from sendCode rather than needing to be pre-validated here.
+ */
+async function moveToZIfSet(): Promise<void> {
+	if (typeof adv.value.zHeight === "number" && !Number.isNaN(adv.value.zHeight)) {
+		await io.sendCode(`G1 Z${adv.value.zHeight} F600 M400`);
+	}
+}
+
+// ── Cancel a running measurement ─────────────────────────────────────────────
+// RRF has no way to interrupt an in-progress M98 macro from the same G-code channel other than a
+// full M112 emergency stop (which also disables heaters/drives - checked against the firmware
+// source, see CLAUDE.md), so this can't stop the machine's CURRENT motion. What it CAN do: give up
+// waiting immediately and stop the measurement from starting any FURTHER step (the next axis, the
+// next belt, ...), since the abandoned promise is simply never awaited again once this rejects.
+class MeasurementCancelledError extends Error {
+	constructor() { super("Measurement cancelled"); this.name = "MeasurementCancelledError"; }
+}
+const cancelRequested = ref(false);
+
+function raceCancellable<T>(promise: Promise<T>): Promise<T> {
+	if (cancelRequested.value) {
+		return Promise.reject(new MeasurementCancelledError());
+	}
+	return new Promise<T>((resolve, reject) => {
+		const stop = watch(cancelRequested, (v) => {
+			if (v) {
+				stop();
+				reject(new MeasurementCancelledError());
+			}
+		});
+		promise.then(
+			(v) => { stop(); resolve(v); },
+			(e) => { stop(); reject(e); },
+		);
+	});
+}
+
+/**
+ * The real belt motion time only depends on the sweep parameters and travel centres, so a repeat
+ * belt test with the same settings can reuse a previous measurement instead of re-probing (RRF has
+ * no way to stop an in-progress M956 recording early - see PLAN.md's B4 finding - so avoiding the
+ * probe run entirely isn't possible; caching it for repeat runs is the next best thing).
+ */
+function beltMotionCacheKey(startFreq: number, endFreq: number, hzPerSec: number, centerX: number, centerY: number): string {
+	return `resonanceLab.beltMotionSec.${startFreq}-${endFreq}-${hzPerSec}-${centerX}-${centerY}`;
+}
+function readCachedBeltMotionSec(key: string): number | undefined {
+	try {
+		const n = parseFloat(window.localStorage.getItem(key) ?? "");
+		return n > 0 ? n : undefined;
+	} catch {
+		return undefined; // storage disabled - just means this run re-probes
+	}
+}
+function writeCachedBeltMotionSec(key: string, sec: number): void {
+	try {
+		window.localStorage.setItem(key, sec.toFixed(2));
+	} catch {
+		// storage disabled - not fatal, next run just re-probes too
+	}
 }
 
 /** Read the accelerometer's currently-configured M955 orientation from its report (default 20 = identity). */
@@ -579,12 +810,25 @@ async function readAccelOrientation(accelId: string): Promise<number> {
 async function readAccelRate(accelId: string): Promise<number> {
 	try {
 		const reply = await io.sendCode(`M955 P${accelId}`);
-		const m = /(\d+(?:\.\d+)?)\s*Hz/i.exec(reply);
-		const rate = m ? Math.round(parseFloat(m[1])) : 0;
+		const rate = parseAccelRateFromReport(reply);
 		return rate >= 100 && rate <= 20000 ? rate : 1000;
 	} catch {
 		return 1000;
 	}
+}
+
+// Custom G-code (the "custom" method) runs whatever the user typed verbatim, unlike every other
+// task's fixed, reviewed move profile - so it gets a review step first. Skippable per-session (not
+// persisted) once the user has seen it, so a repeated re-run of the same profile isn't nagged.
+const confirmGcodeOpen = ref(false);
+const skipGcodeConfirm = ref(false);
+
+function onMeasureClick(): void {
+	if (method.value === "custom" && adv.value.customMoves.trim() && !skipGcodeConfirm.value) {
+		confirmGcodeOpen.value = true;
+		return;
+	}
+	void measure();
 }
 
 async function measure(): Promise<void> {
@@ -598,6 +842,7 @@ async function measure(): Promise<void> {
 		error.value = t("notHomed");
 		return;
 	}
+	cancelRequested.value = false;
 	running.value = true;
 	error.value = "";
 	beltResult.value = null;
@@ -605,21 +850,26 @@ async function measure(): Promise<void> {
 	orientationResult.value = null;
 	verifyResult.value = null;
 	multiResults.value = [];
+	combinedRec.value = null;
 	try {
 		if (method.value === "belts" && !String((machineStore.model as { move?: { kinematics?: { name?: string } } }).move?.kinematics?.name ?? "").toLowerCase().includes("core")) {
 			error.value = t("belts.notCoreXY");
 			running.value = false;
 			return;
 		}
+		if (method.value !== "axescheck") {
+			await moveToZIfSet();
+		}
 		// Size every recording to the accelerometer's real rate (not an assumed 1000 Hz), so M956
 		// stops near the end of the motion instead of over-sampling into idle time.
 		const sampleRate = await readAccelRate(accel.id);
 		if (method.value === "excite") {
-			const run = await runFixedExcitation(io, {
+			const run = await raceCancellable(runFixedExcitation(io, {
 				accelerometer: accel, axis: selectedAxis.value, center: axisCenter(),
 				freq: adv.value.exciteFreq, seconds: adv.value.exciteSeconds, expectedSampleRate: sampleRate,
-			});
-			finish(parse(await downloadCapture(io, run)), `${selectedAxis.value} · ${adv.value.exciteFreq} Hz`);
+				programDir: effectiveProgramDir.value,
+			}));
+			finish(parse(await raceCancellable(downloadCapture(io, run))), `${selectedAxis.value} · ${adv.value.exciteFreq} Hz`);
 		} else if (method.value === "axescheck") {
 			// Measure the RAW mounting. Any orientation already configured in M955 makes the chip report
 			// machine-aligned axes, so without this we'd solve a correction on top of the existing one —
@@ -632,8 +882,8 @@ async function measure(): Promise<void> {
 				const moveResults: Partial<Record<"X" | "Y", ReturnType<typeof analyzeAxisBurst>>> = {};
 				let firstCapture: ReturnType<typeof parseAccelCsv> | null = null;
 				for (const ax of ["X", "Y"] as const) {
-					const run = await runNativeCapture(io, { accelerometer: accel, axis: ax, center: centerOf(ax), span: 20 });
-					const capture = parseAccelCsv(await downloadCapture(io, run));
+					const run = await raceCancellable(runNativeCapture(io, { accelerometer: accel, axis: ax, center: centerOf(ax), span: 20 }));
+					const capture = parseAccelCsv(await raceCancellable(downloadCapture(io, run)));
 					firstCapture = firstCapture ?? capture;
 					moveResults[ax] = analyzeAxisBurst(capture);
 				}
@@ -646,27 +896,71 @@ async function measure(): Promise<void> {
 		} else if (method.value === "belts") {
 			// Tension matching only needs the band the belt resonances live in — a light 15–95 Hz
 			// sweep at 2 Hz/s (~40s per belt), not the full calibration band. Defaults are belt-specific.
+			const centerX = centerOf("X");
+			const centerY = centerOf("Y");
 			const opts = {
-				accelerometer: accel, centerX: centerOf("X"), centerY: centerOf("Y"),
+				accelerometer: accel, centerX, centerY,
 				startFreq: adv.value.beltStart, endFreq: adv.value.beltEnd, hzPerSec: adv.value.beltHz,
-				expectedSampleRate: sampleRate,
+				expectedSampleRate: sampleRate, programDir: effectiveProgramDir.value,
 			};
 			// The CoreXY diagonal sweep finishes well before its kinematic estimate, so a count-based
-			// recording over-samples ~20s into idle. Time the real motion once and size both belts to it.
-			const motionSec = await measureBeltMotion(io, { ...opts, belt: "a" });
-			const samples = motionSec > 0 ? Math.min(200000, Math.ceil((motionSec + 1.5) * sampleRate)) : undefined;
-			const runA = await runBeltCapture(io, { ...opts, belt: "a", samples });
-			const a = await downloadCapture(io, runA);
-			const runB = await runBeltCapture(io, { ...opts, belt: "b", samples });
-			const b = await downloadCapture(io, runB);
+			// recording over-samples into idle time if it doesn't know the real duration in advance.
+			// RRF has no way to stop an in-progress M956 recording early (see the audit notes on
+			// this), so rather than a separate throwaway probe move (which used to run belt A's exact
+			// profile twice in a row), belt A's own recording self-times the real motion — see
+			// runBeltCapture's self-sizing mode. A cached measurement from a previous run at these
+			// exact parameters skips that entirely and sizes both belts precisely up front.
+			const cacheKey = beltMotionCacheKey(opts.startFreq, opts.endFreq, opts.hzPerSec, centerX, centerY);
+			const cachedMotionSec = readCachedBeltMotionSec(cacheKey);
+			let motionSec = cachedMotionSec ?? 0;
+
+			beltPhase.value = "A";
+			let a: ReturnType<typeof parseAccelCsv>;
+			if (cachedMotionSec !== undefined) {
+				const samplesA = Math.min(200000, Math.ceil((cachedMotionSec + 1.5) * sampleRate));
+				const runA = await raceCancellable(runBeltCapture(io, { ...opts, belt: "a", samples: samplesA }));
+				a = parseAccelCsv(await raceCancellable(downloadCapture(io, runA)));
+			} else {
+				beltEstablishingTiming.value = true;
+				const runA = await raceCancellable(runBeltCapture(io, { ...opts, belt: "a" }));
+				const rawA = parseAccelCsv(await raceCancellable(downloadCapture(io, runA)));
+				beltEstablishingTiming.value = false;
+				if (runA.motionSec && runA.motionSec > 0) {
+					motionSec = runA.motionSec;
+					writeCachedBeltMotionSec(cacheKey, motionSec);
+					a = cropCaptureToDuration(rawA, motionSec + 1.5);
+				} else {
+					// Timing signals weren't available - keep the full (oversized) capture uncropped
+					// and don't cache anything, so the next run tries again.
+					a = rawA;
+				}
+			}
+			console.info("[ResonanceLab] belt A capture", {
+				kinematicDurationSec: beltEstimatedDurationSec({ ...opts, belt: "a" }), motionSec,
+				samplingRate: a.samplingRate, sampleCount: a.channels[0]?.length ?? 0,
+			});
+
+			// Size belt B precisely from the known motion time (falling back to self-sizing too if it
+			// isn't known at all). If the firmware's real rate differs from the M955-parsed sizing
+			// rate, resize using belt A's ACTUAL trailer rate instead of repeating the same over/under-record.
+			const samplesB = motionSec > 0
+				? resizeForActualRate(Math.min(200000, Math.ceil((motionSec + 1.5) * sampleRate)), motionSec, sampleRate, a.samplingRate)
+				: undefined;
+
+			beltPhase.value = "B";
+			const runB = await raceCancellable(runBeltCapture(io, { ...opts, belt: "b", samples: samplesB }));
+			const b = parseAccelCsv(await raceCancellable(downloadCapture(io, runB)));
+			console.info("[ResonanceLab] belt B capture", { samplingRate: b.samplingRate, sampleCount: b.channels[0]?.length ?? 0 });
+
+			beltPhase.value = null;
 			lastResult.value = null;
 			// Analyse (and chart) only the swept band, with a little margin either side.
-			beltResult.value = compareBelts(parseAccelCsv(a), parseAccelCsv(b), adv.value.beltEnd + 10, Math.max(0, adv.value.beltStart - 5));
+			beltResult.value = compareBelts(a, b, adv.value.beltEnd + 10, Math.max(0, adv.value.beltStart - 5));
 		} else if (method.value === "profile") {
 			const entries: Array<{ speed: number; capture: ReturnType<typeof parseAccelCsv> }> = [];
 			for (let speed = adv.value.speedMin; speed <= adv.value.speedMax; speed += Math.max(1, adv.value.speedStep)) {
-				const run = await runSpeedPointCapture(io, { accelerometer: accel, axis: selectedAxis.value, center: axisCenter(), speed, expectedSampleRate: sampleRate });
-				entries.push({ speed, capture: parseAccelCsv(await downloadCapture(io, run)) });
+				const run = await raceCancellable(runSpeedPointCapture(io, { accelerometer: accel, axis: selectedAxis.value, center: axisCenter(), speed, expectedSampleRate: sampleRate }));
+				entries.push({ speed, capture: parseAccelCsv(await raceCancellable(downloadCapture(io, run))) });
 			}
 			lastResult.value = null;
 			profileResult.value = buildVibrationProfile(entries);
@@ -676,12 +970,12 @@ async function measure(): Promise<void> {
 			const axes = selectedAxes.value.length ? selectedAxes.value : [selectedAxis.value];
 			const collected: Array<{ axis: string } & ReturnType<typeof parse>> = [];
 			for (const ax of axes) {
-				const run = await runSweepCapture(io, {
+				const run = await raceCancellable(runSweepCapture(io, {
 					accelerometer: accel, axis: ax, center: centerOf(ax),
 					startFreq: adv.value.startFreq, endFreq: adv.value.endFreq, hzPerSec: adv.value.hzPerSec,
-					expectedSampleRate: sampleRate,
-				});
-				collected.push({ axis: ax, ...parse(await downloadCapture(io, run)) });
+					expectedSampleRate: sampleRate, programDir: effectiveProgramDir.value,
+				}));
+				collected.push({ axis: ax, ...parse(await raceCancellable(downloadCapture(io, run))) });
 			}
 			if (collected.length === 1) {
 				selectedAxis.value = collected[0].axis;
@@ -689,21 +983,29 @@ async function measure(): Promise<void> {
 			} else {
 				lastResult.value = null;
 				multiResults.value = collected.map((c) => ({ axis: c.axis, analysis: c.analysis, capture: c.capture }));
+				combinedRec.value = computeCombinedRec(multiResults.value);
 			}
 		} else {
-			const run = await runNativeCapture(io, {
+			const run = await raceCancellable(runNativeCapture(io, {
 				accelerometer: accel, axis: selectedAxis.value, center: axisCenter(),
 				customMoves: method.value === "custom" && adv.value.customMoves.trim()
 					? adv.value.customMoves.split("\n").map((l) => l.trim()).filter(Boolean)
 					: undefined,
-			});
-			const csv = await downloadCapture(io, run);
+			}));
+			const csv = await raceCancellable(downloadCapture(io, run));
 			finish(parse(csv), `${selectedAxis.value} · ${t(`methods.${method.value}`)}`);
 		}
 	} catch (e) {
-		error.value = (e as Error).message || String(e);
+		if (e instanceof MeasurementCancelledError) {
+			uiStore.makeNotification(LogLevel.warning, t("cancel.title"), t("cancel.notification"));
+		} else {
+			error.value = (e as Error).message || String(e);
+		}
 	} finally {
 		running.value = false;
+		cancelRequested.value = false;
+		beltPhase.value = null;
+		beltEstablishingTiming.value = false;
 	}
 }
 
@@ -719,15 +1021,17 @@ async function verify(): Promise<void> {
 	if (!accel || !before) {
 		return;
 	}
+	cancelRequested.value = false;
 	running.value = true;
 	error.value = "";
 	try {
-		const run = await runSweepCapture(io, {
+		await moveToZIfSet();
+		const run = await raceCancellable(runSweepCapture(io, {
 			accelerometer: accel, axis: before.axis, center: axisCenter(),
 			startFreq: adv.value.startFreq, endFreq: adv.value.endFreq, hzPerSec: adv.value.hzPerSec,
-			keepShaper: true, expectedSampleRate: await readAccelRate(accel.id),
-		});
-		const after = analyseCapture(parseAccelCsv(await downloadCapture(io, run)));
+			keepShaper: true, expectedSampleRate: await readAccelRate(accel.id), programDir: effectiveProgramDir.value,
+		}));
+		const after = analyseCapture(parseAccelCsv(await raceCancellable(downloadCapture(io, run))));
 		const eBefore = before.analysis.normalized.reduce((a, b) => a + b, 0);
 		const eAfter = after.normalized.reduce((a, b) => a + b, 0);
 		const labels: Array<number> = [];
@@ -741,9 +1045,14 @@ async function verify(): Promise<void> {
 		}
 		verifyResult.value = { reduction: eBefore > 0 ? 1 - eAfter / eBefore : 0, before: { labels, data: beforeData }, after: afterData };
 	} catch (e) {
-		error.value = (e as Error).message || String(e);
+		if (e instanceof MeasurementCancelledError) {
+			uiStore.makeNotification(LogLevel.warning, t("cancel.title"), t("cancel.notification"));
+		} else {
+			error.value = (e as Error).message || String(e);
+		}
 	} finally {
 		running.value = false;
+		cancelRequested.value = false;
 	}
 }
 // ── Belt / profile presentation ──────────────────────────────────────────────
@@ -838,9 +1147,52 @@ const multiRows = computed(() => multiResults.value.map((r) => {
 		axis: r.axis,
 		color: AXIS_COLORS[r.axis.toUpperCase()] ?? "#888888",
 		peak: r.analysis.peaks[0]?.freq.toFixed(1) ?? "—",
-		fit: best ? { name: best.name, display: SHAPER_DISPLAY_NAMES[best.name], freq: best.freq, reduction: (100 - best.vibrations * 100).toFixed(0), maxAccel: best.maxAccel } : null,
+		fit: best ? { name: best.name, display: SHAPER_DISPLAY_NAMES[best.name], freq: best.freq, reduction: (100 - best.vibrations * 100).toFixed(0) } : null,
 	};
 }));
+
+/**
+ * Combined shaper recommendation across every axis that found a resonance - RRF's M593 shaper
+ * applies machine-wide, so with 2+ axes this is the actual decision, not each axis's own best.
+ * Needs at least two axes with a recommendation; otherwise there's nothing to combine.
+ */
+function computeCombinedRec(entries: Array<MultiAxisResult>): CombinedRecommendationResult | null {
+	const withPeaks = entries.filter((e) => e.analysis.recommendation);
+	if (withPeaks.length < 2) {
+		return null;
+	}
+	// Feed the strongest measured peak's damping ratio across all axes into the fit - the same guard
+	// the single-axis pipeline uses (pipeline.ts).
+	let strongest: { power: number; dampingRatio?: number } | undefined;
+	for (const e of withPeaks) {
+		const p = e.analysis.peaks[0];
+		if (p && (!strongest || p.power > strongest.power)) {
+			strongest = p;
+		}
+	}
+	const zeta = strongest?.dampingRatio;
+	return findBestShaperCombined(
+		withPeaks.map((e) => ({ axis: e.axis, freqBins: e.analysis.spectrum.freqs, psd: e.analysis.normalized })),
+		{ dampingRatio: zeta && zeta >= 0.02 && zeta <= 0.3 ? zeta : undefined },
+	);
+}
+
+/** Presentation for the "recommended for all axes" row: display name, per-axis reduction, agreement. */
+const combinedSummary = computed(() => {
+	const c = combinedRec.value;
+	if (!c) {
+		return null;
+	}
+	const best = c.best;
+	const perAxisText = best.perAxis.map((p) => `${p.axis} −${(100 - p.vibrations * 100).toFixed(0)}%`).join(" · ");
+	// "All axes agree" when every axis's own independently-chosen best already names this shaper
+	// within ~2 Hz - the combined fit is confirming, not trading one axis's resonance off another's.
+	const agrees = multiResults.value.every((r) => {
+		const ownBest = r.analysis.recommendation?.best;
+		return ownBest !== undefined && ownBest.name === best.name && Math.abs(ownBest.freq - best.freq) <= 2;
+	});
+	return { name: best.name, display: SHAPER_DISPLAY_NAMES[best.name], freq: best.freq, perAxisText, agrees };
+});
 
 /** Open one axis of a multi-axis run in the full single-axis view (shaper compare, response, verify). */
 function inspectAxis(axis: string): void {
@@ -866,7 +1218,7 @@ function parse(csvText: string) {
 	const capture = parseAccelCsv(csvText);
 	return {
 		capture,
-		analysis: analyseCapture(capture, { maxSmoothing: adv.value.maxSmoothing > 0 ? adv.value.maxSmoothing : undefined }),
+		analysis: analyseCapture(capture),
 	};
 }
 
@@ -878,6 +1230,10 @@ function finish(parsed: ReturnType<typeof parse>, source: string): void {
 
 // ── Spectrogram view ─────────────────────────────────────────────────────────
 const chartMode = ref<"spectrum" | "spectrogram">("spectrum");
+/** Overlay each raw captured channel (X/Y/Z as recorded) on the spectrum chart, alongside the
+ *  combined curve the recommendation actually runs on - the CSV always carries all axes even though
+ *  only one was deliberately excited, and seeing the others helps spot cross-axis coupling. */
+const showChannels = ref(false);
 const spectrogram = computed(() => {
 	const r = result.value;
 	if (!r?.capture || chartMode.value !== "spectrogram") {
@@ -892,6 +1248,8 @@ const spectrogram = computed(() => {
 const CAPTURE_DIR = "0:/sys/accelerometer";
 const captureBrowser = ref(false);
 const selectedFiles = ref<Array<string>>([]);
+/** True while the capture list is being fetched, or a selected capture is being downloaded/parsed. */
+const loadingCapture = ref(false);
 
 interface RemoteCapture { name: string; kind: string; axis: string; when: Date; size: number }
 const remoteFiles = ref<Array<RemoteCapture>>([]);
@@ -919,6 +1277,7 @@ function captureMeta(kind: string): { label: string; icon: string } {
 }
 
 async function refreshRemoteCaptures(): Promise<void> {
+	loadingCapture.value = true;
 	try {
 		const files = await (machineStore as unknown as { getFileList(dir: string): Promise<Array<{ name: string; isDirectory?: boolean; size?: number }>> })
 			.getFileList(CAPTURE_DIR);
@@ -929,6 +1288,8 @@ async function refreshRemoteCaptures(): Promise<void> {
 		selectedFiles.value = [];
 	} catch {
 		remoteFiles.value = [];
+	} finally {
+		loadingCapture.value = false;
 	}
 }
 
@@ -970,6 +1331,7 @@ function resetResults(): void {
 	orientationResult.value = null;
 	verifyResult.value = null;
 	multiResults.value = [];
+	combinedRec.value = null;
 }
 
 /**
@@ -991,10 +1353,11 @@ async function loadSelectedCaptures(): Promise<void> {
 	}
 	captureBrowser.value = false; // selection is valid — dismiss the dialog right away
 	error.value = "";
+	loadingCapture.value = true;
+	resetResults(); // clear whatever was on screen immediately, so stale data never lingers behind the loading state
 	try {
 		if (beltA && beltB) {
 			const [ca, cb] = await Promise.all([downloadRemote(beltA.name), downloadRemote(beltB.name)]);
-			resetResults();
 			beltResult.value = compareBelts(parseAccelCsv(ca), parseAccelCsv(cb), 150, 5);
 			return;
 		}
@@ -1004,18 +1367,19 @@ async function loadSelectedCaptures(): Promise<void> {
 			for (const s of sweeps) {
 				collected.push({ axis: s.axis, ...parse(await downloadRemote(s.name)) });
 			}
-			resetResults();
 			multiResults.value = collected.map((c) => ({ axis: c.axis, analysis: c.analysis, capture: c.capture }));
+			combinedRec.value = computeCombinedRec(multiResults.value);
 			return;
 		}
 		const one = picks[0];
-		resetResults();
 		if (one.axis) {
 			selectedAxis.value = one.axis;
 		}
 		finish(parse(await downloadRemote(one.name)), one.name);
 	} catch (e) {
 		error.value = (e as Error).message || String(e);
+	} finally {
+		loadingCapture.value = false;
 	}
 }
 
@@ -1057,25 +1421,57 @@ const verdict = computed(() => {
 		color: "info",
 		icon: "mdi-lightbulb-on-outline",
 		headline: t("results.headline", { shaper: SHAPER_DISPLAY_NAMES[fit.name], freq: fit.freq.toFixed(1), reduction }),
-		detail: t("results.detail", { smoothing: fit.smoothing.toFixed(3), accel: fit.maxAccel, peak: a.peaks[0]?.freq.toFixed(1) ?? "?" }),
+		detail: t("results.detail", { peak: a.peaks[0]?.freq.toFixed(1) ?? "?" }),
 	};
 });
 
 function downloadDiagnostics(): void {
 	const r = result.value;
-	downloadReport(buildReport({
-		pluginId: "ResonanceLab",
-		model: machineStore.model,
-		state: r ? {
+	const state: Record<string, unknown> = { method: method.value };
+	// Only one of these is populated at a time in normal use, but a diagnostics report should
+	// reflect whatever is actually on screen rather than assuming the single-axis shape.
+	if (r) {
+		state.singleAxis = {
 			axis: r.axis, source: r.source, when: r.when.toISOString(),
 			samplingRate: r.analysis.samplingRate, overflows: r.analysis.overflows,
 			sampleCount: r.analysis.sampleCount,
 			peaks: r.analysis.peaks.slice(0, 5),
 			// Strip the per-bin response array - the report only needs the verdict numbers.
 			best: r.analysis.recommendation
-				? (({ name, freq, vibrations, smoothing, maxAccel }) => ({ name, freq, vibrations, smoothing, maxAccel }))(r.analysis.recommendation.best)
+				? (({ name, freq, vibrations, smoothing }) => ({ name, freq, vibrations, smoothing }))(r.analysis.recommendation.best)
 				: null,
-		} : undefined,
+		};
+	}
+	if (multiResults.value.length) {
+		state.multiAxis = {
+			axes: multiResults.value.map((m) => ({
+				axis: m.axis, samplingRate: m.analysis.samplingRate, overflows: m.analysis.overflows,
+				sampleCount: m.analysis.sampleCount, peaks: m.analysis.peaks.slice(0, 5),
+			})),
+			combined: combinedRec.value
+				? (({ name, freq, vibrations, perAxis }) => ({ name, freq, vibrations, perAxis }))(combinedRec.value.best)
+				: null,
+		};
+	}
+	if (beltResult.value) {
+		const b = beltResult.value;
+		state.belts = { similarity: b.similarity, energyRatio: b.energyRatio, peakA: b.peakA, peakB: b.peakB, verdict: b.verdict };
+	}
+	if (profileResult.value) {
+		const p = profileResult.value;
+		state.profile = { median: p.median, problems: p.problems, quietest: p.quietest };
+	}
+	if (orientationResult.value) {
+		const o = orientationResult.value;
+		state.orientation = { iParam: o.solution.iParam, faces: o.solution.faces, conflicts: o.solution.conflicts, coupling: o.coupling };
+	}
+	if (verifyResult.value) {
+		state.verify = { reduction: verifyResult.value.reduction };
+	}
+	downloadReport(buildReport({
+		pluginId: "ResonanceLab",
+		model: machineStore.model,
+		state,
 	}));
 }
 
@@ -1110,3 +1506,25 @@ async function applyShaper(): Promise<void> {
 	}
 }
 </script>
+
+<style scoped>
+/* Task-rail item titles were being truncated with an ellipsis ("Accelerometer orien...") - the
+   longest labels don't fit Vuetify's default single-line, nowrap-and-ellipsis title even at the
+   rail's 220px width. Let them wrap onto a second line instead, so any future/longer label degrades
+   gracefully rather than clipping. */
+.rlab-task-rail :deep(.v-list-item-title) {
+	white-space: normal;
+	line-height: 1.25;
+}
+
+.rlab-gcode-preview {
+	white-space: pre-wrap;
+	word-break: break-word;
+	background: rgba(128, 128, 128, 0.12);
+	border-radius: 4px;
+	padding: 8px 10px;
+	font-size: 0.8125rem;
+	max-height: 220px;
+	overflow-y: auto;
+}
+</style>

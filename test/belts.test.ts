@@ -66,6 +66,18 @@ describe("belt comparison", () => {
 		expect(Math.abs(r.peakA - 40)).toBeLessThan(3);
 		expect(Math.abs(r.peakB - 85)).toBeLessThan(3);
 	});
+
+	it("similarity ignores near-zero band outside the hump, so padding the requested range doesn't move it", () => {
+		// Independent noise floors either side of the shared two-peak ridge (different seeds, like two
+		// real accelerometer captures) - a wider requested band used to nudge the correlation just from
+		// broadband noise power on both sides "agreeing" it's quiet out there. The hump-only restriction
+		// should make the result exactly independent of how much of that padding is requested.
+		const csvA = beltCsvTwoPeak(60, 2, 72, 1.9, 7);
+		const csvB = beltCsvTwoPeak(60, 1.9, 72, 2, 19);
+		const tight = compareBeltCsvs(csvA, csvB, 90, 45);
+		const padded = compareBeltCsvs(csvA, csvB, 400, 0);
+		expect(padded.similarity).toBeCloseTo(tight.similarity, 9);
+	});
 });
 
 describe("diagonal sweep + belt capture", () => {

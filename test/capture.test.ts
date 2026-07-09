@@ -1,6 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { parseAccelCsv } from "../src/capture/csv";
+import { cropCaptureToDuration, parseAccelCsv } from "../src/capture/csv";
 import { generateSweep } from "../src/capture/sweep";
 
 describe("parseAccelCsv", () => {
@@ -28,6 +28,28 @@ describe("parseAccelCsv", () => {
 		expect(parseAccelCsv(sample.replace("overflows 0", "overflows 3")).overflows).toBe(3);
 		expect(() => parseAccelCsv("hello\nworld\n!")).toThrow();
 		expect(() => parseAccelCsv(sample.split("\n").slice(0, 4).join("\n"))).toThrow(/trailer/);
+	});
+});
+
+describe("cropCaptureToDuration", () => {
+	it("discards trailing samples recorded after the real motion ended", () => {
+		const capture = { axes: ["X", "Y"], channels: [new Float64Array(1000), new Float64Array(1000)], samplingRate: 1000, overflows: 0 };
+		const cropped = cropCaptureToDuration(capture, 0.5); // 0.5s at 1000Hz = 500 samples
+		expect(cropped.channels[0].length).toBe(500);
+		expect(cropped.channels[1].length).toBe(500);
+		// Metadata is preserved.
+		expect(cropped.axes).toEqual(["X", "Y"]);
+		expect(cropped.samplingRate).toBe(1000);
+	});
+
+	it("is a no-op when the capture is already shorter than the requested duration", () => {
+		const capture = { axes: ["X"], channels: [new Float64Array(100)], samplingRate: 1000, overflows: 0 };
+		expect(cropCaptureToDuration(capture, 5).channels[0].length).toBe(100);
+	});
+
+	it("never returns a negative-length crop", () => {
+		const capture = { axes: ["X"], channels: [new Float64Array(100)], samplingRate: 1000, overflows: 0 };
+		expect(cropCaptureToDuration(capture, -1).channels[0].length).toBe(0);
 	});
 });
 
@@ -181,6 +203,47 @@ describe("capture robustness (live-printer findings)", () => {
 		// Returned (not thrown) so the CSV parser can surface its specific error.
 		expect(await downloadCapture(io, run, 100)).toBe(partial);
 	});
+
+	it("downloadCapture best-effort deletes the per-run program file once the capture is confirmed complete", async () => {
+		const { downloadCapture } = await import("../src/capture/orchestrator");
+		const full = "Sample,X\n0,0.1\nRate 1000, overflows 0";
+		const deleted: Array<string> = [];
+		const io = {
+			sendCode: async () => "ok",
+			upload: async () => {},
+			download: async () => full,
+			accelRuns: () => 1,
+			awaitAccelRun: async () => {},
+			delete: async (path: string) => { deleted.push(path); },
+		};
+		const run = {
+			csvPath: "x.csv", progPath: "0:/sys/rlab-sweep-x-123.g",
+			program: { lines: [], pulses: 0, durationSec: 0, maxExcursion: 0 }, accelId: "0", runsBefore: 0,
+		};
+		await downloadCapture(io, run);
+		expect(deleted).toEqual(["0:/sys/rlab-sweep-x-123.g"]);
+	});
+
+	it("downloadCapture does NOT delete the program file when the capture never completed", async () => {
+		const { downloadCapture } = await import("../src/capture/orchestrator");
+		const partial = "Sample,X\n0,0.1"; // truncated: no rate/overflows trailer
+		const deleted: Array<string> = [];
+		const io = {
+			sendCode: async () => "ok",
+			upload: async () => {},
+			download: async () => partial,
+			accelRuns: () => 0,
+			awaitAccelRun: async () => { throw new Error("never completed"); },
+			delete: async (path: string) => { deleted.push(path); },
+		};
+		const run = {
+			csvPath: "x.csv", progPath: "0:/sys/rlab-sweep-x-123.g",
+			program: { lines: [], pulses: 0, durationSec: 0, maxExcursion: 0 }, accelId: "0", runsBefore: 0,
+		};
+		await downloadCapture(io, run, 100);
+		expect(deleted).toEqual([]);
+	});
+
 });
 
 describe("orientation solver (3.6-prototype algorithm)", () => {
@@ -217,10 +280,105 @@ describe("belt recording sizing", () => {
 		expect(codes.some((c) => c.includes("S1234 "))).toBe(true);
 	});
 
-	it("measureBeltMotion falls back to 0 when the move returns instantly (no real motion to time)", async () => {
-		const { measureBeltMotion } = await import("../src/capture/orchestrator");
-		const io = { sendCode: async () => "ok", upload: async () => {}, download: async () => "" };
-		// In the test env sendCode is instant, so the elapsed time is ~0 → unreliable → caller falls back.
-		expect(await measureBeltMotion(io, beltOpts)).toBe(0);
+	it("runBeltCapture oversizes to the kinematic estimate when no samples are given (self-sizing mode)", async () => {
+		const { runBeltCapture } = await import("../src/capture/orchestrator");
+		const codes: Array<string> = [];
+		const io = { sendCode: async (c: string) => { codes.push(c); return "ok"; }, upload: async () => {}, download: async () => "" };
+		const run = await runBeltCapture(io, beltOpts);
+		const s = parseInt(/S(\d+)/.exec(codes[0])![1], 10);
+		expect(s).toBeGreaterThan(run.program.durationSec * 1000); // expectedSampleRate defaults to 1000 Hz
+		// No busy/idle signals on this IO - the real duration can't be measured, so the caller must
+		// keep the full oversized capture rather than guessing from sendCode's resolution (which,
+		// unlike the old unrecorded probe, now shares its line with the M956 recording and so no
+		// longer approximates the real motion time at all).
+		expect(run.motionSec).toBeUndefined();
+	});
+
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	it("runBeltCapture self-times the real motion via busy/idle while its oversized recording runs, not a separate probe move", async () => {
+		vi.useFakeTimers();
+		const { runBeltCapture } = await import("../src/capture/orchestrator");
+		const uploaded: Array<string> = [];
+		const io = {
+			sendCode: async () => "ok", // resolves instantly - must NOT be trusted for timing
+			upload: async (path: string) => { uploaded.push(path); },
+			download: async () => "",
+			awaitBusy: () => new Promise<void>((resolve) => setTimeout(resolve, 20)),
+			awaitIdle: () => new Promise<void>((resolve) => setTimeout(resolve, 8000)),
+		};
+		const promise = runBeltCapture(io, beltOpts);
+		await vi.runAllTimersAsync();
+		const run = await promise;
+		expect(run.motionSec).toBeCloseTo(8, 1);
+		// Exactly one program uploaded (the belt's own recording) - no separate throwaway probe move.
+		expect(uploaded.length).toBe(1);
+	});
+
+	it("runBeltCapture leaves motionSec undefined when awaitBusy never observes motion", async () => {
+		vi.useFakeTimers();
+		const { runBeltCapture } = await import("../src/capture/orchestrator");
+		const io = {
+			sendCode: async () => "ok",
+			upload: async () => {},
+			download: async () => "",
+			// awaitBusy times out (motion never observed, e.g. a very short move or a status-polling
+			// gap) - motionSec must stay undefined rather than reporting an unreliable duration.
+			awaitBusy: () => new Promise<void>((_resolve, reject) => setTimeout(() => reject(new Error("timeout")), 5000)),
+			awaitIdle: () => new Promise<void>((resolve) => setTimeout(resolve, 100)),
+		};
+		const promise = runBeltCapture(io, beltOpts);
+		await vi.runAllTimersAsync();
+		const run = await promise;
+		expect(run.motionSec).toBeUndefined();
+	});
+
+	it("resizeForActualRate recomputes belt B's samples when the trailer rate differs from the sizing rate", async () => {
+		const { resizeForActualRate } = await import("../src/capture/orchestrator");
+		// Sized for 1000 Hz but the firmware actually ran at 800 Hz (>10% off) - resize using the
+		// measured motion time at the real rate.
+		const resized = resizeForActualRate(40000, 38.5, 1000, 800);
+		expect(resized).toBe(Math.ceil((38.5 + 1.5) * 800));
+	});
+
+	it("resizeForActualRate leaves the sample count unchanged when the trailer rate roughly matches", async () => {
+		const { resizeForActualRate } = await import("../src/capture/orchestrator");
+		expect(resizeForActualRate(40000, 38.5, 1000, 1020)).toBe(40000);
+	});
+});
+
+describe("parseAccelRateFromReport", () => {
+	// RRF's exact M955 status wording (Accelerometers.cpp: ConfigureAccelerometer), both the
+	// CAN-expansion form ("<boardAddr>:<localAddr> ...") and the local-mainboard form.
+	it("parses the real RRF M955 report wording (CAN expansion board)", async () => {
+		const { parseAccelRateFromReport } = await import("../src/capture/orchestrator");
+		const report = "Accelerometer 121:0 type LIS3DH with orientation 20 samples at 1344Hz with 10-bit resolution, SPI frequency 5000000";
+		expect(parseAccelRateFromReport(report)).toBe(1344);
+	});
+
+	it("parses the real RRF M955 report wording (local mainboard)", async () => {
+		const { parseAccelRateFromReport } = await import("../src/capture/orchestrator");
+		const report = "Accelerometer 0 type LIS3DH with orientation 20 samples at 1344Hz with 10-bit resolution, SPI frequency 5000000";
+		expect(parseAccelRateFromReport(report)).toBe(1344);
+	});
+
+	it("is not confused by other numbers in the report (board address, orientation, resolution)", async () => {
+		const { parseAccelRateFromReport } = await import("../src/capture/orchestrator");
+		// A pathological but plausible report where the board address or orientation could look like
+		// a rate if a naive parser grabbed the first bare number - "samples at" must anchor the match.
+		const report = "Accelerometer 20:0 type LIS3DH with orientation 1344 samples at 800Hz with 10-bit resolution";
+		expect(parseAccelRateFromReport(report)).toBe(800);
+	});
+
+	it("falls back to a bare '<n> Hz' if the wording doesn't match 'samples at'", async () => {
+		const { parseAccelRateFromReport } = await import("../src/capture/orchestrator");
+		expect(parseAccelRateFromReport("Running at 500 Hz")).toBe(500);
+	});
+
+	it("returns 0 when nothing parses", async () => {
+		const { parseAccelRateFromReport } = await import("../src/capture/orchestrator");
+		expect(parseAccelRateFromReport("Input shaping is disabled")).toBe(0);
 	});
 });

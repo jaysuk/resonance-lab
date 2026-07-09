@@ -29,6 +29,7 @@ export const selectedAxes = ref<Array<string>>(["X", "Y"]);
 import type { BeltComparison } from "./analysis/belts";
 import type { VibrationProfile } from "./analysis/vibration";
 import type { OrientationSolution } from "./analysis/axesMap";
+import type { CombinedRecommendationResult } from "./analysis/recommend";
 
 export const beltResult = ref<BeltComparison | null>(null);
 export const profileResult = ref<VibrationProfile | null>(null);
@@ -36,4 +37,6 @@ export const profileResult = ref<VibrationProfile | null>(null);
 /** One axis of a multi-axis calibration run (kept here so the overlay survives leaving the page). */
 export interface MultiAxisResult { axis: string; analysis: CaptureAnalysis; capture: AccelCapture }
 export const multiResults = ref<Array<MultiAxisResult>>([]);
+/** Shaper recommendation weighing every axis in `multiResults` at once (RRF's M593 is machine-wide). */
+export const combinedRec = ref<CombinedRecommendationResult | null>(null);
 export const orientationResult = ref<{ solution: OrientationSolution; accelId: string; coupling: number } | null>(null);
