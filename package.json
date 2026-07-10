@@ -20,7 +20,7 @@
   "devDependencies": {
     "@vitejs/plugin-vue": "^5.2.4",
     "@vitest/coverage-v8": "^4.1.8",
-    "dwc-plugin-test-kit": "github:jaysuk/dwc-plugin-test-kit#v0.2.2",
+    "dwc-plugin-test-kit": "github:jaysuk/dwc-plugin-test-kit#v0.2.4",
     "happy-dom": "^15.11.7",
     "vitest": "^4.1.8",
     "vue": "^3.5.30",
