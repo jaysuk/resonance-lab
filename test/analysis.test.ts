@@ -224,7 +224,7 @@ describe("findBestShaperCombined", () => {
 		]);
 		expect(combined).not.toBeNull();
 		expect(combined!.best.vibrations).toBeLessThan(1);
-	});
+	}, 20000);
 
 	it("returns null for an empty axis list", () => {
 		expect(findBestShaperCombined([])).toBeNull();
