@@ -58,7 +58,6 @@ export function generateSweep(options: SweepOptions): SweepProgram {
 		throw new Error("Invalid sweep range");
 	}
 
-	const preambleAccel = Math.min(10000, maxAccel);
 	const lines: Array<string> = [
 		"; Resonance Lab swept excitation",
 		`; axis ${axis}, ${startFreq}-${endFreq} Hz at ${hzPerSec} Hz/s, ${accelPerHz} mm/s^2 per Hz`,
@@ -66,7 +65,7 @@ export function generateSweep(options: SweepOptions): SweepProgram {
 		options.keepShaper
 			? "; input shaper left ACTIVE (verify run)"
 			: 'M593 P"none" ; disable input shaping during the measurement',
-		`M204 P${preambleAccel} T${preambleAccel}`,
+		`M204 P${maxAccel} T${maxAccel}`,
 	];
 
 	let freq = startFreq;
@@ -100,6 +99,10 @@ export function generateSweep(options: SweepOptions): SweepProgram {
 		freq += 2 * tSeg * hzPerSec * 2; // frequency advances with elapsed test time
 	}
 
+	// M204 is a persistent machine-wide override, not scoped to this macro - restore the real
+	// configured acceleration so moves issued after this test (including another task's) aren't
+	// left running at whatever the sweep's last (test) pulse happened to set.
+	lines.push(`M204 P${maxAccel} T${maxAccel}`);
 	lines.push("M400");
 	const endHome = options.secondary ? ` ${options.secondary.axis.toUpperCase()}${round3(options.secondary.center)}` : "";
 	lines.push(`G1 ${axis}${round3(options.center)}${endHome} F${maxFeedrate}`);
@@ -140,6 +143,9 @@ export function generateFixedExcitation(options: SweepOptions & { freq: number; 
 		lines.push(`G1 ${axis}${round3(options.center)} F${maxFeedrate}`);
 		dir = -dir;
 	}
+	// Restore the real configured acceleration - M204 is a persistent machine-wide override (see
+	// generateSweep's note), not scoped to this macro.
+	lines.push(`M204 P${maxAccel} T${maxAccel}`);
 	lines.push("M400");
 	return { lines, pulses, durationSec: pulses * 4 * tSeg, maxExcursion: d };
 }

@@ -85,7 +85,7 @@
 			<v-divider vertical />
 
 			<!-- Task panel -->
-			<div class="flex-grow-1 d-flex flex-column pa-3" style="min-width: 0; overflow-y: auto">
+			<div class="flex-grow-1 d-flex flex-column pa-3" style="min-width: 0; min-height: 0; overflow-y: auto">
 				<!-- What this task does -->
 				<div class="d-flex align-center ga-2">
 					<v-icon size="large">{{ activeTask.icon }}</v-icon>
@@ -726,6 +726,21 @@ function centerOf(letter: string): number {
 }
 
 /**
+ * The axis's own configured motion limits (M201 acceleration, M203 speed), so test excitation
+ * scales with what the machine can actually do instead of a fixed, conservative default - and so
+ * the "quick test move" and every other native move runs at the printer's real cruising speed.
+ * Falls back to the previous hardcoded defaults if the object model doesn't have the axis yet.
+ */
+function axisLimits(letter: string): { maxAccel: number; maxFeedrate: number } {
+	const axes = (machineStore.model as { move?: { axes?: Array<{ letter?: string; acceleration?: number; speed?: number }> } }).move?.axes ?? [];
+	const ax = axes.find((a) => a.letter === letter);
+	return {
+		maxAccel: ax?.acceleration && ax.acceleration > 0 ? ax.acceleration : 10000,
+		maxFeedrate: ax?.speed && ax.speed > 0 ? ax.speed * 60 : 30000, // object model speed is mm/s; G-code F is mm/min
+	};
+}
+
+/**
  * Move to the user-set Z height (if any) before measuring. RRF's own M208 soft limits still apply to
  * a normal G1 move (only G1/G0 H2 bypasses them), so an out-of-range value surfaces as a normal
  * G-code error from sendCode rather than needing to be pre-validated here.
@@ -867,7 +882,7 @@ async function measure(): Promise<void> {
 			const run = await raceCancellable(runFixedExcitation(io, {
 				accelerometer: accel, axis: selectedAxis.value, center: axisCenter(),
 				freq: adv.value.exciteFreq, seconds: adv.value.exciteSeconds, expectedSampleRate: sampleRate,
-				programDir: effectiveProgramDir.value,
+				programDir: effectiveProgramDir.value, ...axisLimits(selectedAxis.value),
 			}));
 			finish(parse(await raceCancellable(downloadCapture(io, run))), `${selectedAxis.value} · ${adv.value.exciteFreq} Hz`);
 		} else if (method.value === "axescheck") {
@@ -898,10 +913,14 @@ async function measure(): Promise<void> {
 			// sweep at 2 Hz/s (~40s per belt), not the full calibration band. Defaults are belt-specific.
 			const centerX = centerOf("X");
 			const centerY = centerOf("Y");
+			const limX = axisLimits("X");
+			const limY = axisLimits("Y");
 			const opts = {
 				accelerometer: accel, centerX, centerY,
 				startFreq: adv.value.beltStart, endFreq: adv.value.beltEnd, hzPerSec: adv.value.beltHz,
 				expectedSampleRate: sampleRate, programDir: effectiveProgramDir.value,
+				// Both axes move at once on a diagonal - use whichever is more restrictive.
+				maxAccel: Math.min(limX.maxAccel, limY.maxAccel), maxFeedrate: Math.min(limX.maxFeedrate, limY.maxFeedrate),
 			};
 			// The CoreXY diagonal sweep finishes well before its kinematic estimate, so a count-based
 			// recording over-samples into idle time if it doesn't know the real duration in advance.
@@ -973,7 +992,7 @@ async function measure(): Promise<void> {
 				const run = await raceCancellable(runSweepCapture(io, {
 					accelerometer: accel, axis: ax, center: centerOf(ax),
 					startFreq: adv.value.startFreq, endFreq: adv.value.endFreq, hzPerSec: adv.value.hzPerSec,
-					expectedSampleRate: sampleRate, programDir: effectiveProgramDir.value,
+					expectedSampleRate: sampleRate, programDir: effectiveProgramDir.value, ...axisLimits(ax),
 				}));
 				collected.push({ axis: ax, ...parse(await raceCancellable(downloadCapture(io, run))) });
 			}
@@ -988,6 +1007,7 @@ async function measure(): Promise<void> {
 		} else {
 			const run = await raceCancellable(runNativeCapture(io, {
 				accelerometer: accel, axis: selectedAxis.value, center: axisCenter(),
+				feedrate: axisLimits(selectedAxis.value).maxFeedrate,
 				customMoves: method.value === "custom" && adv.value.customMoves.trim()
 					? adv.value.customMoves.split("\n").map((l) => l.trim()).filter(Boolean)
 					: undefined,
@@ -1030,6 +1050,7 @@ async function verify(): Promise<void> {
 			accelerometer: accel, axis: before.axis, center: axisCenter(),
 			startFreq: adv.value.startFreq, endFreq: adv.value.endFreq, hzPerSec: adv.value.hzPerSec,
 			keepShaper: true, expectedSampleRate: await readAccelRate(accel.id), programDir: effectiveProgramDir.value,
+			...axisLimits(before.axis),
 		}));
 		const after = analyseCapture(parseAccelCsv(await raceCancellable(downloadCapture(io, run))));
 		const eBefore = before.analysis.normalized.reduce((a, b) => a + b, 0);

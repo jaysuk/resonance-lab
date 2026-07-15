@@ -90,6 +90,17 @@ describe("generateSweep", () => {
 		expect(() => generateSweep({ axis: "X", center: 0, startFreq: 0 })).toThrow();
 		expect(() => generateSweep({ axis: "X", center: 0, startFreq: 50, endFreq: 20 })).toThrow();
 	});
+
+	it("restores the configured acceleration at the end, not just the last pulse's (lower) rate", () => {
+		// Peak pulse accel here is 60*135=8100, below the 10000 machine limit - so without an explicit
+		// restore, the program would leave M204 at 8100 rather than the real configured maximum, and
+		// any later move (e.g. a "quick test move") would inherit that reduced cap since RRF's M204 is
+		// a persistent override, not scoped to this macro.
+		const p = generateSweep({ axis: "X", center: 0, startFreq: 5, endFreq: 135, accelPerHz: 60, maxAccel: 10000 });
+		const m204s = p.lines.filter((l) => l.startsWith("M204 P")).map((l) => parseFloat(l.slice(6)));
+		expect(m204s[m204s.length - 1]).toBe(10000);
+		expect(m204s[m204s.length - 1]).toBeGreaterThan(m204s[m204s.length - 2]);
+	});
 });
 
 describe("fixed excitation + orientation", () => {
@@ -106,6 +117,14 @@ describe("fixed excitation + orientation", () => {
 		const { generateSweep } = await import("../src/capture/sweep");
 		const p = generateSweep({ axis: "X", center: 100, startFreq: 5, endFreq: 10, keepShaper: true });
 		expect(p.lines.some((l) => l.includes('M593 P"none"'))).toBe(false);
+	});
+
+	it("fixed excitation also restores the configured acceleration afterward", async () => {
+		const { generateFixedExcitation } = await import("../src/capture/sweep");
+		// Test accel at 40Hz*60 = 2400, well below the 10000 machine limit.
+		const p = generateFixedExcitation({ axis: "X", center: 100, freq: 40, seconds: 2, accelPerHz: 60, maxAccel: 10000 });
+		const m204s = p.lines.filter((l) => l.startsWith("M204 P")).map((l) => parseFloat(l.slice(6)));
+		expect(m204s).toEqual([2400, 10000]);
 	});
 
 	it("orientation check finds the dominant channel", async () => {

@@ -214,6 +214,7 @@ export interface BeltCaptureOptions {
 	endFreq?: number;
 	hzPerSec?: number;
 	maxAccel?: number;
+	maxFeedrate?: number;
 	expectedSampleRate?: number;
 	/** Override the recording length (samples). Used when the real motion time has been measured. */
 	samples?: number;
@@ -229,6 +230,7 @@ function beltProgram(options: BeltCaptureOptions): SweepProgram {
 		endFreq: options.endFreq,
 		hzPerSec: options.hzPerSec,
 		maxAccel: options.maxAccel,
+		maxFeedrate: options.maxFeedrate,
 		secondary: { axis: "Y", center: options.centerY, scale: options.belt === "a" ? 1 : -1 },
 	});
 }
