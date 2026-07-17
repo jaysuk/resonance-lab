@@ -10,7 +10,7 @@
  *  - ADVANCED: the user supplies their own move profile (the native flow the stock plugin offers);
  *    we arm the recorder around it.
  */
-import { generateFixedExcitation, generateSweep, type SweepOptions, type SweepProgram } from "./sweep";
+import { generateFixedExcitation, generateSweep, type ShaperState, type SweepOptions, type SweepProgram } from "./sweep";
 
 export interface MachineIO {
 	/** Send a G-code line and resolve when it has completed (DWC sendCode semantics). */
@@ -220,6 +220,8 @@ export interface BeltCaptureOptions {
 	samples?: number;
 	/** Directory the generated program file is uploaded to. Defaults to DEFAULT_PROGRAM_DIR. */
 	programDir?: string;
+	/** Shaper configuration (read from the object model before the test) to restore once it's over. */
+	restoreShaper?: ShaperState;
 }
 
 function beltProgram(options: BeltCaptureOptions): SweepProgram {
@@ -231,6 +233,7 @@ function beltProgram(options: BeltCaptureOptions): SweepProgram {
 		hzPerSec: options.hzPerSec,
 		maxAccel: options.maxAccel,
 		maxFeedrate: options.maxFeedrate,
+		restoreShaper: options.restoreShaper,
 		secondary: { axis: "Y", center: options.centerY, scale: options.belt === "a" ? 1 : -1 },
 	});
 }
@@ -322,7 +325,11 @@ export interface NativeCaptureOptions {
 
 /**
  * Run a native profile capture: arm the recorder, then either the simple generated out-and-back
- * profile (default) or the user's own moves (advanced).
+ * profile (default) or the user's own moves (advanced). Whether to disable/restore input shaping
+ * around this is the caller's call (see ResonanceLabPage.vue's withShaperDisabled) - this function
+ * doesn't touch M593 itself, since it's shared by tasks that want that (move) and tasks that don't
+ * ("custom", where the user's own G-code owns shaper state; the orientation check, which isn't a
+ * resonance measurement at all).
  */
 export async function runNativeCapture(io: MachineIO, options: NativeCaptureOptions): Promise<CaptureRun> {
 	const axis = options.axis.toUpperCase();

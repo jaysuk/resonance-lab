@@ -145,6 +145,8 @@ export function normalizeToFrequencies(freqBins: ArrayLike<number>, psd: ArrayLi
 export interface FitOptions {
 	dampingRatio?: number;
 	testDampingRatios?: Array<number>;
+	/** Lower bound of the band the fit is scored against (Hz). Default: 0 (no floor). */
+	minFreq?: number;
 	maxFreq?: number;
 	scv?: number;
 }
@@ -153,6 +155,7 @@ export interface FitOptions {
 export function fitShaper(cfg: ShaperDefinition, freqBins: ArrayLike<number>, psd: ArrayLike<number>, options: FitOptions = {}): ShaperFit | null {
 	const dampingRatio = options.dampingRatio ?? DEFAULT_DAMPING_RATIO;
 	const testRatios = options.testDampingRatios ?? TEST_DAMPING_RATIOS;
+	const minFreq = options.minFreq ?? 0;
 	const maxFreq = options.maxFreq ?? MAX_FREQ;
 	const scv = options.scv ?? 5;
 
@@ -160,7 +163,7 @@ export function fitShaper(cfg: ShaperDefinition, freqBins: ArrayLike<number>, ps
 	const bins: Array<number> = [];
 	const power: Array<number> = [];
 	for (let i = 0; i < freqBins.length; i++) {
-		if (freqBins[i] <= maxFreq) {
+		if (freqBins[i] >= minFreq && freqBins[i] <= maxFreq) {
 			bins.push(freqBins[i]);
 			power.push(psd[i]);
 		}
@@ -169,8 +172,10 @@ export function fitShaper(cfg: ShaperDefinition, freqBins: ArrayLike<number>, ps
 	interface Candidate { freq: number; vibrations: number; smoothing: number; score: number; vals: Float64Array }
 	const candidates: Array<Candidate> = [];
 
-	// Scan top-down so equal-vibration ties resolve to the higher (less smoothing) frequency.
-	for (let f = MAX_SHAPER_FREQ; f >= cfg.minFreq; f -= 0.2) {
+	// Scan top-down so equal-vibration ties resolve to the higher (less smoothing) frequency. Capped
+	// to the tested band too - recommending a frequency the sweep never actually excited would be
+	// extrapolating beyond measured data.
+	for (let f = Math.min(MAX_SHAPER_FREQ, maxFreq); f >= Math.max(cfg.minFreq, minFreq); f -= 0.2) {
 		const shaper = cfg.init(f, dampingRatio);
 		const smoothing = estimateSmoothing(shaper, 5000, scv);
 		let worst = 0;
@@ -219,10 +224,11 @@ export function fitShaper(cfg: ShaperDefinition, freqBins: ArrayLike<number>, ps
 
 /** Fit every shaper type and pick the recommendation (simpler shapers win unless clearly beaten). */
 export function findBestShaper(freqBins: ArrayLike<number>, psd: ArrayLike<number>, options: FitOptions = {}): RecommendationResult | null {
+	const minFreq = options.minFreq ?? 0;
 	const maxFreq = options.maxFreq ?? MAX_FREQ;
 	const bins: Array<number> = [];
 	for (let i = 0; i < freqBins.length; i++) {
-		if (freqBins[i] <= maxFreq) {
+		if (freqBins[i] >= minFreq && freqBins[i] <= maxFreq) {
 			bins.push(freqBins[i]);
 		}
 	}
@@ -277,6 +283,7 @@ export interface CombinedRecommendationResult {
 function fitShaperCombined(cfg: ShaperDefinition, spectra: Array<AxisSpectrum>, options: FitOptions = {}): CombinedShaperFit | null {
 	const dampingRatio = options.dampingRatio ?? DEFAULT_DAMPING_RATIO;
 	const testRatios = options.testDampingRatios ?? TEST_DAMPING_RATIOS;
+	const minFreq = options.minFreq ?? 0;
 	const maxFreq = options.maxFreq ?? MAX_FREQ;
 	const scv = options.scv ?? 5;
 
@@ -285,7 +292,7 @@ function fitShaperCombined(cfg: ShaperDefinition, spectra: Array<AxisSpectrum>, 
 		const bins: Array<number> = [];
 		const power: Array<number> = [];
 		for (let i = 0; i < s.freqBins.length; i++) {
-			if (s.freqBins[i] <= maxFreq) {
+			if (s.freqBins[i] >= minFreq && s.freqBins[i] <= maxFreq) {
 				bins.push(s.freqBins[i]);
 				power.push(s.psd[i]);
 			}
@@ -299,7 +306,9 @@ function fitShaperCombined(cfg: ShaperDefinition, spectra: Array<AxisSpectrum>, 
 	}
 	const candidates: Array<Candidate> = [];
 
-	for (let f = MAX_SHAPER_FREQ; f >= cfg.minFreq; f -= 0.2) {
+	// Capped to the tested band, same reasoning as fitShaper: don't recommend a frequency the sweep
+	// never actually excited.
+	for (let f = Math.min(MAX_SHAPER_FREQ, maxFreq); f >= Math.max(cfg.minFreq, minFreq); f -= 0.2) {
 		const shaper = cfg.init(f, dampingRatio);
 		const smoothing = estimateSmoothing(shaper, 5000, scv);
 		let worst = 0;

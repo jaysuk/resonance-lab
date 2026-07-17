@@ -10,6 +10,27 @@
  * the capture orchestrator owns upload/run/record sequencing.
  */
 
+/** A snapshot of RRF's move.shaping object model, read before a test disables it. */
+export interface ShaperState {
+	/** move.shaping.type: a real shaper name, "none", or "custom". */
+	type: string;
+	frequency: number;
+	damping: number;
+}
+
+/**
+ * G-code to restore a previously-read shaper configuration, or "" if there's nothing to do -
+ * either it was already "none" (the test's own disable line already covers that), or it's
+ * "custom" (a user-defined impulse train with its own M593 H/T syntax this doesn't attempt to
+ * reconstruct - this plugin only ever recommends the six named shapers).
+ */
+export function shaperRestoreGcode(state?: ShaperState): string {
+	if (!state || state.type === "none" || state.type === "custom") {
+		return "";
+	}
+	return `M593 P"${state.type}" F${state.frequency.toFixed(1)} S${state.damping.toFixed(2)}`;
+}
+
 export interface SweepOptions {
 	/** Axis letter to excite (e.g. "X"). */
 	axis: string;
@@ -32,6 +53,12 @@ export interface SweepOptions {
 	secondary?: { axis: string; center: number; scale: number };
 	/** Keep the configured input shaper ACTIVE during the test (the verify run). Default: disable. */
 	keepShaper?: boolean;
+	/**
+	 * The shaper configuration to restore once the test's own disabling is done with (read from the
+	 * object model just before the test starts). Without this, the test leaves shaping disabled
+	 * indefinitely - M593 is a persistent override, same reasoning as the M204 restore above.
+	 */
+	restoreShaper?: ShaperState;
 }
 
 export interface SweepProgram {
@@ -103,6 +130,12 @@ export function generateSweep(options: SweepOptions): SweepProgram {
 	// configured acceleration so moves issued after this test (including another task's) aren't
 	// left running at whatever the sweep's last (test) pulse happened to set.
 	lines.push(`M204 P${maxAccel} T${maxAccel}`);
+	if (!options.keepShaper) {
+		const restore = shaperRestoreGcode(options.restoreShaper);
+		if (restore) {
+			lines.push(restore);
+		}
+	}
 	lines.push("M400");
 	const endHome = options.secondary ? ` ${options.secondary.axis.toUpperCase()}${round3(options.secondary.center)}` : "";
 	lines.push(`G1 ${axis}${round3(options.center)}${endHome} F${maxFeedrate}`);
@@ -146,6 +179,12 @@ export function generateFixedExcitation(options: SweepOptions & { freq: number; 
 	// Restore the real configured acceleration - M204 is a persistent machine-wide override (see
 	// generateSweep's note), not scoped to this macro.
 	lines.push(`M204 P${maxAccel} T${maxAccel}`);
+	if (!options.keepShaper) {
+		const restore = shaperRestoreGcode(options.restoreShaper);
+		if (restore) {
+			lines.push(restore);
+		}
+	}
 	lines.push("M400");
 	return { lines, pulses, durationSec: pulses * 4 * tSeg, maxExcursion: d };
 }

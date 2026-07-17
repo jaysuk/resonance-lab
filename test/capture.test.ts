@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { cropCaptureToDuration, parseAccelCsv } from "../src/capture/csv";
-import { generateSweep } from "../src/capture/sweep";
+import { generateSweep, shaperRestoreGcode } from "../src/capture/sweep";
 
 describe("parseAccelCsv", () => {
 	const sample = [
@@ -100,6 +100,38 @@ describe("generateSweep", () => {
 		const m204s = p.lines.filter((l) => l.startsWith("M204 P")).map((l) => parseFloat(l.slice(6)));
 		expect(m204s[m204s.length - 1]).toBe(10000);
 		expect(m204s[m204s.length - 1]).toBeGreaterThan(m204s[m204s.length - 2]);
+	});
+
+	it("restores a previously-configured shaper after the test, not just disabling it", () => {
+		const p = generateSweep({
+			axis: "X", center: 0, startFreq: 5, endFreq: 20,
+			restoreShaper: { type: "mzv", frequency: 42.5, damping: 0.1 },
+		});
+		expect(p.lines.some((l) => l === 'M593 P"none" ; disable input shaping during the measurement')).toBe(true);
+		expect(p.lines.some((l) => l === 'M593 P"mzv" F42.5 S0.10')).toBe(true);
+	});
+
+	it("does not restore shaping when the machine had none configured, or during a keepShaper run", () => {
+		const none = generateSweep({ axis: "X", center: 0, startFreq: 5, endFreq: 20, restoreShaper: { type: "none", frequency: 0, damping: 0 } });
+		expect(none.lines.filter((l) => l.startsWith("M593")).length).toBe(1); // only the leading disable
+
+		const kept = generateSweep({
+			axis: "X", center: 0, startFreq: 5, endFreq: 20, keepShaper: true,
+			restoreShaper: { type: "mzv", frequency: 42.5, damping: 0.1 },
+		});
+		expect(kept.lines.some((l) => l.startsWith("M593"))).toBe(false);
+	});
+});
+
+describe("shaperRestoreGcode", () => {
+	it("builds an M593 restore command for a real shaper", () => {
+		expect(shaperRestoreGcode({ type: "zvd", frequency: 38.25, damping: 0.15 })).toBe('M593 P"zvd" F38.3 S0.15');
+	});
+
+	it("is a no-op for undefined, \"none\" or \"custom\" (never reconstructed)", () => {
+		expect(shaperRestoreGcode(undefined)).toBe("");
+		expect(shaperRestoreGcode({ type: "none", frequency: 0, damping: 0 })).toBe("");
+		expect(shaperRestoreGcode({ type: "custom", frequency: 40, damping: 0.1 })).toBe("");
 	});
 });
 

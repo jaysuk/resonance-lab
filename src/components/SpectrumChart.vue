@@ -46,17 +46,26 @@ function fmtVal(v: number): string {
 function buildDatasets(): { labels: Array<number>; datasets: Array<ChartDataset<"line">> } {
 	const a = props.analysis;
 	const rec = a.recommendation;
+	// rec.freqBins is already restricted to whatever band the fit was scored on (the sweep's own
+	// Start/End Hz, when known) - mirror that bound here so "Measured" lines up index-for-index with
+	// fit.vals/residual below, instead of showing spectrum content outside the tested range.
+	const minFreq = rec ? rec.freqBins[0] : 0;
 	const maxFreq = rec ? rec.freqBins[rec.freqBins.length - 1] : 200;
 
 	const labels: Array<number> = [];
 	const measured: Array<number> = [];
+	const includedIdx: Array<number> = []; // raw spectrum.freqs index behind each label - needed below since minFreq can skip a leading run
 	for (let i = 0; i < a.spectrum.freqs.length; i++) {
 		const f = a.spectrum.freqs[i];
+		if (f < minFreq) {
+			continue;
+		}
 		if (f > maxFreq) {
 			break;
 		}
 		labels.push(Math.round(f * 10) / 10);
 		measured.push(a.normalized[i]);
+		includedIdx.push(i);
 	}
 
 	const datasets: Array<ChartDataset<"line">> = [{
@@ -101,7 +110,7 @@ function buildDatasets(): { labels: Array<number>; datasets: Array<ChartDataset<
 		a.spectrum.psd.forEach((psd, i) => {
 			const label = props.channelLabels![i] ?? `ch${i}`;
 			const weighted = normalizeToFrequencies(a.spectrum.freqs, psd);
-			const data = labels.map((_, j) => weighted[j] ?? 0);
+			const data = includedIdx.map((idx) => weighted[idx] ?? 0);
 			datasets.push({
 				label,
 				data,

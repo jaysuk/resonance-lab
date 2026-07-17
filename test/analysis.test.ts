@@ -158,6 +158,20 @@ describe("recommendation engine", () => {
 		expect(estimateRemainingVibrations(tuned, 0.1, Array.from(freqs), Array.from(psd)).remaining).toBeLessThan(0.12);
 	});
 
+	it("minFreq/maxFreq restrict the band the fit is scored and reported against", () => {
+		const { freqs, psd } = syntheticPsd(45);
+		const norm = normalizeToFrequencies(freqs, psd);
+		const rec = findBestShaper(freqs, norm, { minFreq: 60, maxFreq: 100 })!;
+		expect(Array.from(rec.freqBins).every((f) => f >= 60 && f <= 100)).toBe(true);
+		// The 45 Hz resonance is entirely excluded from the (60-100 Hz) band, so the fit sees an
+		// essentially flat spectrum there - unlike the unrestricted case (rec.best.freq near 45). The
+		// candidate shaper frequency itself is also confined to the band, not just the data it's
+		// scored against - recommending 145 Hz off a sweep that only tested up to 100 would be
+		// extrapolating beyond what was actually measured.
+		expect(rec.best.freq).toBeGreaterThanOrEqual(60);
+		expect(rec.best.freq).toBeLessThanOrEqual(100);
+	});
+
 	it("normalizeToFrequencies divides by frequency and suppresses the low band", () => {
 		const freqs = [1, 5, 50];
 		const psd = [10, 10, 10];

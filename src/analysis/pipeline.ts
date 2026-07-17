@@ -23,6 +23,8 @@ export interface CaptureAnalysis {
 }
 
 export interface AnalyseOptions {
+	/** Lower bound of the band peaks/fitting consider (Hz). Default: 0 (no floor). */
+	minFreq?: number;
 	maxFreq?: number;
 	dampingRatio?: number;
 	scv?: number;
@@ -31,6 +33,7 @@ export interface AnalyseOptions {
 export function analyseCapture(capture: AccelCapture, options: AnalyseOptions = {}): CaptureAnalysis {
 	const spectrum = welchPsd(capture.channels, capture.samplingRate);
 	const normalized = normalizeToFrequencies(spectrum.freqs, spectrum.psdSum);
+	const minFreq = options.minFreq ?? 0;
 	const maxFreq = options.maxFreq ?? MAX_FREQ;
 
 	// Peaks are reported on the normalised curve restricted to the useful band. Peak detection is
@@ -41,7 +44,7 @@ export function analyseCapture(capture: AccelCapture, options: AnalyseOptions = 
 	const bandPsd: Array<number> = [];
 	let bandMax = 0;
 	for (let i = 0; i < spectrum.freqs.length; i++) {
-		if (spectrum.freqs[i] <= maxFreq) {
+		if (spectrum.freqs[i] >= minFreq && spectrum.freqs[i] <= maxFreq) {
 			bandFreqs.push(spectrum.freqs[i]);
 			bandPsd.push(normalized[i]);
 			if (normalized[i] > bandMax) {

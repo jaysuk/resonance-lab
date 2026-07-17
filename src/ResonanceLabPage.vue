@@ -214,7 +214,7 @@
 					</v-card>
 
 					<v-alert v-if="verifyResult" :type="verifyResult.reduction > 0.5 ? 'success' : 'warning'" variant="tonal" density="comfortable" class="mb-2">
-						{{ $t("plugins.resonanceLab.results.verified", { reduction: (verifyResult.reduction * 100).toFixed(0) }) }}
+						{{ $t("plugins.resonanceLab.results.verified", { shaper: displayName(verifyResult.shaper.name), freq: verifyResult.shaper.freq.toFixed(1), reduction: (verifyResult.reduction * 100).toFixed(0) }) }}
 					</v-alert>
 					<div v-if="!verifyResult && result.capture" class="d-flex align-center justify-end ga-3 mb-1">
 						<v-checkbox v-if="chartMode === 'spectrum' && result.capture.axes.length > 1" v-model="showChannels" density="compact" hide-details
@@ -224,13 +224,13 @@
 							<v-btn value="spectrogram" size="small" prepend-icon="mdi-blur-linear">{{ $t("plugins.resonanceLab.results.spectrogram") }}</v-btn>
 						</v-btn-toggle>
 					</div>
-					<div class="flex-grow-1" style="min-height: 420px">
+					<div style="flex: 1 1 0; min-height: 420px">
 						<SpectrogramView v-if="!verifyResult && chartMode === 'spectrogram' && spectrogram" :spec="spectrogram" />
 						<LineChart v-else-if="verifyResult"
 								   :labels="verifyResult.before.labels"
 								   :series="[
 								   	{ label: $t('plugins.resonanceLab.results.before'), data: verifyResult.before.data, color: '#2196f3' },
-								   	{ label: $t('plugins.resonanceLab.results.after'), data: verifyResult.after, color: '#4caf50' },
+								   	{ label: $t('plugins.resonanceLab.results.after', { shaper: displayName(verifyResult.shaper.name), freq: verifyResult.shaper.freq.toFixed(1) }), data: verifyResult.after, color: '#4caf50' },
 								   ]"
 								   x-title="Frequency (Hz)" y-title="Vibration (normalised)" />
 						<SpectrumChart v-else :analysis="result.analysis" :overlay-shaper="overlay"
@@ -284,7 +284,7 @@
 							</div>
 						</v-card-text>
 					</v-card>
-					<div class="flex-grow-1" style="min-height: 420px">
+					<div style="flex: 1 1 0; min-height: 420px">
 						<LineChart :labels="beltChart.labels" :series="beltChart.series"
 								   x-title="Frequency (Hz)" y-title="Vibration" />
 					</div>
@@ -301,7 +301,7 @@
 							</div>
 						</v-card-text>
 					</v-card>
-					<div class="flex-grow-1" style="min-height: 420px">
+					<div style="flex: 1 1 0; min-height: 420px">
 						<LineChart :labels="profileChart.labels" :series="profileChart.series"
 								   x-title="Speed (mm/s)" y-title="Vibration energy" />
 					</div>
@@ -323,8 +323,17 @@
 							<v-btn color="primary" prepend-icon="mdi-check" :loading="applying" :disabled="!isConnected" @click="applyShaperFit(combinedSummary.name, combinedSummary.freq)">
 								{{ $t("plugins.resonanceLab.results.apply", { shaper: combinedSummary.display }) }}
 							</v-btn>
+							<v-btn v-if="appliedFit" variant="tonal" prepend-icon="mdi-check-decagram-outline" :loading="running" :disabled="!isConnected" @click="verifyMulti">
+								{{ $t("plugins.resonanceLab.results.verify") }}
+							</v-btn>
 						</v-card-text>
 					</v-card>
+					<v-alert v-if="multiVerifyResult" type="success" variant="tonal" density="comfortable" class="mb-2">
+						{{ $t("plugins.resonanceLab.multi.verified", {
+							shaper: displayName(multiVerifyResult.shaper.name), freq: multiVerifyResult.shaper.freq.toFixed(1),
+							perAxis: multiVerifyResult.perAxis.map((p) => `${p.axis} −${(p.reduction * 100).toFixed(0)}%`).join(" · "),
+						}) }}
+					</v-alert>
 					<v-card variant="tonal" color="info" class="mb-3">
 						<v-card-text class="py-3">
 							<div class="text-subtitle-1 font-weight-medium mb-2">{{ $t("plugins.resonanceLab.multi.headline") }}</div>
@@ -345,8 +354,10 @@
 							<div class="text-caption text-medium-emphasis mt-2">{{ $t("plugins.resonanceLab.multi.note") }}</div>
 						</v-card-text>
 					</v-card>
-					<div class="flex-grow-1" style="min-height: 420px">
-						<LineChart :labels="multiChart.labels" :series="multiChart.series"
+					<div style="flex: 1 1 0; min-height: 420px">
+						<LineChart v-if="multiVerifyChart" :labels="multiVerifyChart.labels" :series="multiVerifyChart.series"
+								   x-title="Frequency (Hz)" y-title="Vibration (normalised)" />
+						<LineChart v-else :labels="multiChart.labels" :series="multiChart.series"
 								   x-title="Frequency (Hz)" y-title="Vibration (normalised)" />
 					</div>
 				</template>
@@ -437,7 +448,7 @@ import { AboutDialog, buildReport, downloadReport, HelpTip } from "dwc-plugin-ru
 
 import { compareBelts } from "./analysis/belts";
 import { analyzeAxisBurst, detectVerticalAxis, solveOrientation } from "./analysis/axesMap";
-import { analyseCapture } from "./analysis/pipeline";
+import { analyseCapture, type CaptureAnalysis } from "./analysis/pipeline";
 import { findBestShaperCombined, type CombinedRecommendationResult } from "./analysis/recommend";
 import { SHAPER_DISPLAY_NAMES, type ShaperName } from "./analysis/shapers";
 import { buildVibrationProfile } from "./analysis/vibration";
@@ -447,6 +458,7 @@ import {
 	resizeForActualRate, runBeltCapture, runFixedExcitation, runNativeCapture, runSpeedPointCapture, runSweepCapture,
 	type MachineIO,
 } from "./capture/orchestrator";
+import { shaperRestoreGcode, type ShaperState } from "./capture/sweep";
 import { computeSpectrogram } from "./analysis/stft";
 import LineChart from "./components/LineChart.vue";
 import SpectrogramView from "./components/SpectrogramView.vue";
@@ -740,6 +752,32 @@ function axisLimits(letter: string): { maxAccel: number; maxFeedrate: number } {
 	};
 }
 
+/** The machine's currently-configured shaper (M593), read straight off the object model - RRF
+ * exposes move.shaping.{type,frequency,damping} directly, no G-code reply parsing needed. */
+function currentShaperState(): ShaperState {
+	const s = (machineStore.model as { move?: { shaping?: { type?: string; frequency?: number; damping?: number } } }).move?.shaping;
+	return { type: s?.type ?? "none", frequency: s?.frequency ?? 0, damping: s?.damping ?? 0 };
+}
+
+/**
+ * Run `fn` with input shaping disabled, restoring whatever was actually configured beforehand once
+ * it's done (even on failure/cancellation) - M593 is a persistent override, so leaving it disabled
+ * after a "quick test move" or vibration profile would silently leave the machine printing
+ * unshaped until the user noticed and reapplied one themselves.
+ */
+async function withShaperDisabled<T>(fn: () => Promise<T>): Promise<T> {
+	const prev = currentShaperState();
+	await io.sendCode('M593 P"none"');
+	try {
+		return await fn();
+	} finally {
+		const restore = shaperRestoreGcode(prev);
+		if (restore) {
+			await io.sendCode(restore);
+		}
+	}
+}
+
 /**
  * Move to the user-set Z height (if any) before measuring. RRF's own M208 soft limits still apply to
  * a normal G1 move (only G1/G0 H2 bypasses them), so an out-of-range value surfaces as a normal
@@ -749,6 +787,38 @@ async function moveToZIfSet(): Promise<void> {
 	if (typeof adv.value.zHeight === "number" && !Number.isNaN(adv.value.zHeight)) {
 		await io.sendCode(`G1 Z${adv.value.zHeight} F600 M400`);
 	}
+}
+
+/**
+ * Axis letters this task's own test motion exercises. A single-axis test's generated program only
+ * ever moves that one axis - so if the OTHER axis started off-centre it would just stay there - and
+ * even the tested axis is only walked toward centre gradually as a side effect of the excitation
+ * oscillation (its first pulse), not moved there directly. "custom" is excluded: the user's own
+ * G-code owns its motion.
+ */
+function axesForMethod(): Array<string> {
+	if (method.value === "custom") {
+		return [];
+	}
+	if (method.value === "sweep") {
+		return selectedAxes.value.length ? selectedAxes.value : [selectedAxis.value];
+	}
+	if (method.value === "belts" || method.value === "axescheck") {
+		return ["X", "Y"];
+	}
+	return [selectedAxis.value]; // excite, move, profile
+}
+
+/** Send every axis this measurement will exercise directly to the centre of its travel before the
+ * test's own motion starts, in one combined move (rather than relying on the test's own excitation
+ * to walk it there, which never happens at all for an axis the test doesn't touch). */
+async function moveToCenters(axes: Array<string>): Promise<void> {
+	if (axes.length === 0) {
+		return;
+	}
+	const feed = Math.min(...axes.map((a) => axisLimits(a).maxFeedrate));
+	const parts = axes.map((a) => `${a}${centerOf(a)}`).join(" ");
+	await io.sendCode(`G1 ${parts} F${feed} M400`);
 }
 
 // ── Cancel a running measurement ─────────────────────────────────────────────
@@ -864,6 +934,7 @@ async function measure(): Promise<void> {
 	profileResult.value = null;
 	orientationResult.value = null;
 	verifyResult.value = null;
+	multiVerifyResult.value = null;
 	multiResults.value = [];
 	combinedRec.value = null;
 	try {
@@ -875,6 +946,7 @@ async function measure(): Promise<void> {
 		if (method.value !== "axescheck") {
 			await moveToZIfSet();
 		}
+		await moveToCenters(axesForMethod());
 		// Size every recording to the accelerometer's real rate (not an assumed 1000 Hz), so M956
 		// stops near the end of the motion instead of over-sampling into idle time.
 		const sampleRate = await readAccelRate(accel.id);
@@ -883,6 +955,7 @@ async function measure(): Promise<void> {
 				accelerometer: accel, axis: selectedAxis.value, center: axisCenter(),
 				freq: adv.value.exciteFreq, seconds: adv.value.exciteSeconds, expectedSampleRate: sampleRate,
 				programDir: effectiveProgramDir.value, ...axisLimits(selectedAxis.value),
+				restoreShaper: currentShaperState(),
 			}));
 			finish(parse(await raceCancellable(downloadCapture(io, run))), `${selectedAxis.value} · ${adv.value.exciteFreq} Hz`);
 		} else if (method.value === "axescheck") {
@@ -921,6 +994,7 @@ async function measure(): Promise<void> {
 				expectedSampleRate: sampleRate, programDir: effectiveProgramDir.value,
 				// Both axes move at once on a diagonal - use whichever is more restrictive.
 				maxAccel: Math.min(limX.maxAccel, limY.maxAccel), maxFeedrate: Math.min(limX.maxFeedrate, limY.maxFeedrate),
+				restoreShaper: currentShaperState(),
 			};
 			// The CoreXY diagonal sweep finishes well before its kinematic estimate, so a count-based
 			// recording over-samples into idle time if it doesn't know the real duration in advance.
@@ -977,24 +1051,28 @@ async function measure(): Promise<void> {
 			beltResult.value = compareBelts(a, b, adv.value.beltEnd + 10, Math.max(0, adv.value.beltStart - 5));
 		} else if (method.value === "profile") {
 			const entries: Array<{ speed: number; capture: ReturnType<typeof parseAccelCsv> }> = [];
-			for (let speed = adv.value.speedMin; speed <= adv.value.speedMax; speed += Math.max(1, adv.value.speedStep)) {
-				const run = await raceCancellable(runSpeedPointCapture(io, { accelerometer: accel, axis: selectedAxis.value, center: axisCenter(), speed, expectedSampleRate: sampleRate }));
-				entries.push({ speed, capture: parseAccelCsv(await raceCancellable(downloadCapture(io, run))) });
-			}
+			await withShaperDisabled(async () => {
+				for (let speed = adv.value.speedMin; speed <= adv.value.speedMax; speed += Math.max(1, adv.value.speedStep)) {
+					const run = await raceCancellable(runSpeedPointCapture(io, { accelerometer: accel, axis: selectedAxis.value, center: axisCenter(), speed, expectedSampleRate: sampleRate }));
+					entries.push({ speed, capture: parseAccelCsv(await raceCancellable(downloadCapture(io, run))) });
+				}
+			});
 			lastResult.value = null;
 			profileResult.value = buildVibrationProfile(entries);
 		} else if (method.value === "sweep") {
 			// Sweep each selected axis in turn. One axis → the rich single-axis verdict; several →
 			// overlay them and list a per-axis suggestion (RRF applies one shaper machine-wide).
 			const axes = selectedAxes.value.length ? selectedAxes.value : [selectedAxis.value];
+			const restoreShaper = currentShaperState();
 			const collected: Array<{ axis: string } & ReturnType<typeof parse>> = [];
 			for (const ax of axes) {
 				const run = await raceCancellable(runSweepCapture(io, {
 					accelerometer: accel, axis: ax, center: centerOf(ax),
 					startFreq: adv.value.startFreq, endFreq: adv.value.endFreq, hzPerSec: adv.value.hzPerSec,
 					expectedSampleRate: sampleRate, programDir: effectiveProgramDir.value, ...axisLimits(ax),
+					restoreShaper,
 				}));
-				collected.push({ axis: ax, ...parse(await raceCancellable(downloadCapture(io, run))) });
+				collected.push({ axis: ax, ...parse(await raceCancellable(downloadCapture(io, run)), { minFreq: adv.value.startFreq, maxFreq: adv.value.endFreq }) });
 			}
 			if (collected.length === 1) {
 				selectedAxis.value = collected[0].axis;
@@ -1005,13 +1083,16 @@ async function measure(): Promise<void> {
 				combinedRec.value = computeCombinedRec(multiResults.value);
 			}
 		} else {
-			const run = await raceCancellable(runNativeCapture(io, {
+			const doCapture = () => raceCancellable(runNativeCapture(io, {
 				accelerometer: accel, axis: selectedAxis.value, center: axisCenter(),
 				feedrate: axisLimits(selectedAxis.value).maxFeedrate,
 				customMoves: method.value === "custom" && adv.value.customMoves.trim()
 					? adv.value.customMoves.split("\n").map((l) => l.trim()).filter(Boolean)
 					: undefined,
 			}));
+			// "custom" runs the user's own G-code verbatim - it owns shaper state, same as axescheck
+			// (which isn't measuring resonance at all). Only "move" gets the automatic disable/restore.
+			const run = method.value === "custom" ? await doCapture() : await withShaperDisabled(doCapture);
 			const csv = await raceCancellable(downloadCapture(io, run));
 			finish(parse(csv), `${selectedAxis.value} · ${t(`methods.${method.value}`)}`);
 		}
@@ -1031,14 +1112,65 @@ async function measure(): Promise<void> {
 
 // ── Verify loop & orientation ────────────────────────────────────────────────
 // orientationResult + multiResults live in ./state so results persist across leaving the page.
-const verifyResult = ref<{ reduction: number; before: { labels: Array<number>; data: Array<number> }; after: Array<number> } | null>(null);
+const verifyResult = ref<{
+	reduction: number;
+	before: { labels: Array<number>; data: Array<number> };
+	after: Array<number>;
+	/** Which shaper/frequency the "after" recording actually ran with - snapshotted at capture time
+	 * so it stays correct even if the user applies a different shaper afterward. */
+	shaper: { name: ShaperName; freq: number };
+} | null>(null);
 const appliedFit = ref<{ name: ShaperName; freq: number } | null>(null);
+const multiVerifyResult = ref<{
+	shaper: { name: ShaperName; freq: number };
+	perAxis: Array<{ axis: string; reduction: number; labels: Array<number>; beforeData: Array<number>; afterData: Array<number> }>;
+} | null>(null);
+
+/**
+ * Re-sweep one axis with the shaper ACTIVE (`keepShaper`) and compare energy against `before`'s
+ * already-measured (no-shaper) spectrum, restricted to the same band the original recommendation
+ * was scored on. Shared by the single-axis Verify and the multi-axis "verify all" below.
+ */
+async function verifyAxis(
+	accel: { id: string; label: string }, before: { axis: string; analysis: CaptureAnalysis }, sampleRate: number,
+): Promise<{ reduction: number; labels: Array<number>; beforeData: Array<number>; afterData: Array<number> }> {
+	const minFreq = adv.value.startFreq;
+	const maxFreq = adv.value.endFreq;
+	const run = await raceCancellable(runSweepCapture(io, {
+		accelerometer: accel, axis: before.axis, center: centerOf(before.axis),
+		startFreq: adv.value.startFreq, endFreq: adv.value.endFreq, hzPerSec: adv.value.hzPerSec,
+		keepShaper: true, expectedSampleRate: sampleRate, programDir: effectiveProgramDir.value,
+		...axisLimits(before.axis),
+	}));
+	const after = analyseCapture(parseAccelCsv(await raceCancellable(downloadCapture(io, run))), { minFreq, maxFreq });
+	const labels: Array<number> = [];
+	const beforeData: Array<number> = [];
+	const afterData: Array<number> = [];
+	let eBefore = 0;
+	let eAfter = 0;
+	for (let i = 0; i < before.analysis.spectrum.freqs.length; i++) {
+		const f = before.analysis.spectrum.freqs[i];
+		if (f < minFreq) {
+			continue;
+		}
+		if (f > maxFreq) {
+			break;
+		}
+		eBefore += before.analysis.normalized[i];
+		eAfter += after.normalized[i] ?? 0;
+		labels.push(Math.round(f * 10) / 10);
+		beforeData.push(before.analysis.normalized[i]);
+		afterData.push(after.normalized[i] ?? 0);
+	}
+	return { reduction: eBefore > 0 ? 1 - eAfter / eBefore : 0, labels, beforeData, afterData };
+}
 
 /** Re-run the same sweep with the shaper ACTIVE and compare energy before/after. */
 async function verify(): Promise<void> {
 	const accel = selectedAccel.value ?? accelItems.value[0];
 	const before = result.value;
-	if (!accel || !before) {
+	const shaper = appliedFit.value;
+	if (!accel || !before || !shaper) {
 		return;
 	}
 	cancelRequested.value = false;
@@ -1046,25 +1178,47 @@ async function verify(): Promise<void> {
 	error.value = "";
 	try {
 		await moveToZIfSet();
-		const run = await raceCancellable(runSweepCapture(io, {
-			accelerometer: accel, axis: before.axis, center: axisCenter(),
-			startFreq: adv.value.startFreq, endFreq: adv.value.endFreq, hzPerSec: adv.value.hzPerSec,
-			keepShaper: true, expectedSampleRate: await readAccelRate(accel.id), programDir: effectiveProgramDir.value,
-			...axisLimits(before.axis),
-		}));
-		const after = analyseCapture(parseAccelCsv(await raceCancellable(downloadCapture(io, run))));
-		const eBefore = before.analysis.normalized.reduce((a, b) => a + b, 0);
-		const eAfter = after.normalized.reduce((a, b) => a + b, 0);
-		const labels: Array<number> = [];
-		const beforeData: Array<number> = [];
-		const afterData: Array<number> = [];
-		const maxFreq = 200;
-		for (let i = 0; i < before.analysis.spectrum.freqs.length && before.analysis.spectrum.freqs[i] <= maxFreq; i++) {
-			labels.push(Math.round(before.analysis.spectrum.freqs[i] * 10) / 10);
-			beforeData.push(before.analysis.normalized[i]);
-			afterData.push(after.normalized[i] ?? 0);
+		await moveToCenters([before.axis]);
+		const sampleRate = await readAccelRate(accel.id);
+		const { reduction, labels, beforeData, afterData } = await verifyAxis(accel, before, sampleRate);
+		verifyResult.value = { reduction, before: { labels, data: beforeData }, after: afterData, shaper };
+	} catch (e) {
+		if (e instanceof MeasurementCancelledError) {
+			uiStore.makeNotification(LogLevel.warning, t("cancel.title"), t("cancel.notification"));
+		} else {
+			error.value = (e as Error).message || String(e);
 		}
-		verifyResult.value = { reduction: eBefore > 0 ? 1 - eAfter / eBefore : 0, before: { labels, data: beforeData }, after: afterData };
+	} finally {
+		running.value = false;
+		cancelRequested.value = false;
+	}
+}
+
+/**
+ * Re-sweep every axis from the original multi-axis run with the shaper ACTIVE and report each
+ * axis's own reduction - the single-axis Verify only ever covers whichever axis you're inspecting,
+ * this covers the whole set that was originally selected in one go.
+ */
+async function verifyMulti(): Promise<void> {
+	const accel = selectedAccel.value ?? accelItems.value[0];
+	const shaper = appliedFit.value;
+	if (!accel || !shaper || multiResults.value.length === 0) {
+		return;
+	}
+	cancelRequested.value = false;
+	running.value = true;
+	error.value = "";
+	try {
+		await moveToZIfSet();
+		const axes = multiResults.value.map((r) => r.axis);
+		await moveToCenters(axes);
+		const sampleRate = await readAccelRate(accel.id);
+		const perAxis: Array<{ axis: string; reduction: number; labels: Array<number>; beforeData: Array<number>; afterData: Array<number> }> = [];
+		for (const before of multiResults.value) {
+			const { reduction, labels, beforeData, afterData } = await verifyAxis(accel, before, sampleRate);
+			perAxis.push({ axis: before.axis, reduction, labels, beforeData, afterData });
+		}
+		multiVerifyResult.value = { shaper, perAxis };
 	} catch (e) {
 		if (e instanceof MeasurementCancelledError) {
 			uiStore.makeNotification(LogLevel.warning, t("cancel.title"), t("cancel.notification"));
@@ -1140,27 +1294,61 @@ const multiChart = computed(() => {
 	if (rs.length === 0) {
 		return null;
 	}
-	const maxFreq = 200;
+	const minFreq = adv.value.startFreq;
+	const maxFreq = adv.value.endFreq;
 	// Common x-axis: the longest in-band freq grid across the runs (same rate ⇒ identical bins).
 	let labels: Array<number> = [];
+	let startIdx = 0;
 	for (const r of rs) {
 		const freqs = r.analysis.spectrum.freqs;
 		const lbl: Array<number> = [];
+		let idx0 = -1;
 		for (let i = 0; i < freqs.length && freqs[i] <= maxFreq; i++) {
+			if (freqs[i] < minFreq) {
+				continue;
+			}
+			if (idx0 === -1) {
+				idx0 = i;
+			}
 			lbl.push(Math.round(freqs[i] * 10) / 10);
 		}
 		if (lbl.length > labels.length) {
 			labels = lbl;
+			startIdx = idx0 === -1 ? 0 : idx0;
 		}
 	}
 	return {
 		labels,
 		series: rs.map((r) => ({
 			label: `${r.axis} axis`,
-			data: Array.from(r.analysis.normalized).slice(0, labels.length),
+			data: Array.from(r.analysis.normalized).slice(startIdx, startIdx + labels.length),
 			color: AXIS_COLORS[r.axis.toUpperCase()] ?? "#888888",
 		})),
 	};
+});
+/** Before/after overlay for every verified axis - replaces multiChart once verifyMulti has run
+ * (same "measured view swaps for a before/after view" convention as the single-axis Verify). Each
+ * axis keeps its own colour; solid = before, dashed = after, so axes stay distinguishable while
+ * before/after stays a single consistent line style across the whole chart. */
+const multiVerifyChart = computed(() => {
+	const mv = multiVerifyResult.value;
+	if (!mv) {
+		return null;
+	}
+	let labels: Array<number> = [];
+	for (const p of mv.perAxis) {
+		if (p.labels.length > labels.length) {
+			labels = p.labels;
+		}
+	}
+	const pad = (data: Array<number>) => Array.from({ length: labels.length }, (_, i) => data[i] ?? 0);
+	const series: Array<{ label: string; data: Array<number>; color: string; dash?: boolean }> = [];
+	for (const p of mv.perAxis) {
+		const color = AXIS_COLORS[p.axis.toUpperCase()] ?? "#888888";
+		series.push({ label: `${p.axis} before`, data: pad(p.beforeData), color });
+		series.push({ label: `${p.axis} after`, data: pad(p.afterData), color, dash: true });
+	}
+	return { labels, series };
 });
 const multiRows = computed(() => multiResults.value.map((r) => {
 	const best = r.analysis.recommendation?.best;
@@ -1194,7 +1382,10 @@ function computeCombinedRec(entries: Array<MultiAxisResult>): CombinedRecommenda
 	const zeta = strongest?.dampingRatio;
 	return findBestShaperCombined(
 		withPeaks.map((e) => ({ axis: e.axis, freqBins: e.analysis.spectrum.freqs, psd: e.analysis.normalized })),
-		{ dampingRatio: zeta && zeta >= 0.02 && zeta <= 0.3 ? zeta : undefined },
+		{
+			dampingRatio: zeta && zeta >= 0.02 && zeta <= 0.3 ? zeta : undefined,
+			minFreq: adv.value.startFreq, maxFreq: adv.value.endFreq,
+		},
 	);
 }
 
@@ -1225,7 +1416,10 @@ function inspectAxis(axis: string): void {
 	result.value = { axis: r.axis, when: new Date(), source: t("multi.fromOverlay", { axis: r.axis }), analysis: r.analysis, capture: r.capture };
 	overlay.value = r.analysis.recommendation?.best.name ?? "mzv";
 	chartMode.value = "spectrum";
-	appliedFit.value = null;
+	// appliedFit is deliberately left alone: it tracks what's actually active on the machine (RRF's
+	// M593 is machine-wide), not which axis is currently in view - clearing it here used to hide the
+	// Verify button after applying the combined recommendation from the overlay and then inspecting
+	// an axis to look at its graph.
 	verifyResult.value = null;
 }
 
@@ -1235,11 +1429,11 @@ function backToOverlay(): void {
 	verifyResult.value = null;
 }
 
-function parse(csvText: string) {
+function parse(csvText: string, freqRange?: { minFreq: number; maxFreq: number }) {
 	const capture = parseAccelCsv(csvText);
 	return {
 		capture,
-		analysis: analyseCapture(capture),
+		analysis: analyseCapture(capture, freqRange),
 	};
 }
 
@@ -1351,6 +1545,7 @@ function resetResults(): void {
 	profileResult.value = null;
 	orientationResult.value = null;
 	verifyResult.value = null;
+	multiVerifyResult.value = null;
 	multiResults.value = [];
 	combinedRec.value = null;
 }
@@ -1386,7 +1581,7 @@ async function loadSelectedCaptures(): Promise<void> {
 		if (sweeps.length > 1) {
 			const collected: Array<{ axis: string } & ReturnType<typeof parse>> = [];
 			for (const s of sweeps) {
-				collected.push({ axis: s.axis, ...parse(await downloadRemote(s.name)) });
+				collected.push({ axis: s.axis, ...parse(await downloadRemote(s.name), { minFreq: adv.value.startFreq, maxFreq: adv.value.endFreq }) });
 			}
 			multiResults.value = collected.map((c) => ({ axis: c.axis, analysis: c.analysis, capture: c.capture }));
 			combinedRec.value = computeCombinedRec(multiResults.value);
@@ -1396,7 +1591,10 @@ async function loadSelectedCaptures(): Promise<void> {
 		if (one.axis) {
 			selectedAxis.value = one.axis;
 		}
-		finish(parse(await downloadRemote(one.name)), one.name);
+		// The CSV itself carries no record of what sweep range captured it - the current Start/End
+		// (Hz) controls are the best available approximation, so only apply them for a sweep capture.
+		const freqRange = one.kind === "sweep" ? { minFreq: adv.value.startFreq, maxFreq: adv.value.endFreq } : undefined;
+		finish(parse(await downloadRemote(one.name), freqRange), one.name);
 	} catch (e) {
 		error.value = (e as Error).message || String(e);
 	} finally {
