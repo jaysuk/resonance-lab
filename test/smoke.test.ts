@@ -3,8 +3,8 @@ import { loadObjectModel, mountInDwc, sentCodes, setConnected, setModel } from "
 
 import { analyseCapture } from "../src/analysis/pipeline";
 import { parseAccelCsv } from "../src/capture/csv";
-import ResonanceLabPage from "../src/ResonanceLabPage.vue";
-import SummaryPanel from "../src/SummaryPanel.vue";
+import ResonanceLabPage from "../src/ui37/ResonanceLabPage.vue";
+import SummaryPanel from "../src/ui37/SummaryPanel.vue";
 import { lastResult, measurementRunning, method } from "../src/state";
 
 /** Synthetic 3-channel (X/Y/Z) accelerometer capture, ringing at f0 on every channel. */

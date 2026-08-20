@@ -1,6 +1,6 @@
 {
   "name": "resonance-lab",
-  "version": "1.0.2",
+  "version": "1.1.0",
   "description": "Resonance Lab — input shaping & resonance analysis plugin for DuetWebControl (Vue 3).",
   "private": true,
   "license": "GPL-3.0-or-later",
@@ -9,21 +9,24 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "typecheck": "dwc-plugin-typecheck",
+    "typecheck": "node scripts/typecheck.mjs",
     "verify-build": "dwc-plugin-verify-build",
     "changelog": "node scripts/changelog.mjs"
   },
   "dependencies": {
     "chart.js": "^4.5.1",
-    "dwc-plugin-runtime": "github:jaysuk/dwc-plugin-runtime#v0.8.4"
+    "dwc-plugin-runtime": "^0.8.7"
   },
   "devDependencies": {
-    "@vitejs/plugin-vue": "^5.2.4",
-    "@vitest/coverage-v8": "^4.1.8",
-    "dwc-plugin-test-kit": "github:jaysuk/dwc-plugin-test-kit#v0.2.4",
-    "happy-dom": "^15.11.7",
-    "vitest": "^4.1.8",
-    "vue": "^3.5.30",
-    "vuetify": "^4.1.0"
-  }
+    "@vitejs/plugin-vue": "^6.0.8",
+    "@vitest/coverage-v8": "^4.1.10",
+    "dwc-plugin-test-kit": "^0.2.6",
+    "happy-dom": "^20.11.2",
+    "vitest": "^4.1.10",
+    "vue": "^3.5.41",
+    "vuetify": "^4.1.9"
+  },
+  "dwcTypecheckIgnore": [
+    "ui36"
+  ]
 }

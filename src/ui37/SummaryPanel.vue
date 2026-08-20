@@ -49,8 +49,8 @@ import { computed } from "vue";
 
 import { useMachineStore } from "@/stores/machine";
 
-import { SHAPER_DISPLAY_NAMES, type ShaperName } from "./analysis/shapers";
-import { lastResult } from "./state";
+import { SHAPER_DISPLAY_NAMES, type ShaperName } from "../analysis/shapers";
+import { lastResult } from "../state";
 
 const machineStore = useMachineStore();
 const last = lastResult;

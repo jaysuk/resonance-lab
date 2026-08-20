@@ -14,8 +14,8 @@
 import { Chart, type ChartDataset } from "chart.js/auto";
 import { onBeforeUnmount, onMounted, ref, watch } from "vue";
 
-import { normalizeToFrequencies } from "../analysis/recommend";
-import type { CaptureAnalysis } from "../analysis/pipeline";
+import { normalizeToFrequencies } from "../../analysis/recommend";
+import type { CaptureAnalysis } from "../../analysis/pipeline";
 
 /** Muted, distinguishable colours for the raw per-channel overlay - deliberately not reusing the
  *  measured/after-shaper/response palette above so the two concerns stay visually separable. */

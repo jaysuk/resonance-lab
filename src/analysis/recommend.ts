@@ -30,6 +30,11 @@ export interface ShaperFit {
 	name: ShaperName;
 	/** Best target frequency for this shaper type (Hz). */
 	freq: number;
+	/** The damping ratio (M593 S) the impulse train was actually built with - `options.dampingRatio`
+	 *  when given (e.g. a measured zeta), else `DEFAULT_DAMPING_RATIO`. This is what RRF needs to
+	 *  reproduce the same shaper, not just a score input - surfaced so "Apply"/"Save to config.g"
+	 *  can send a complete M593 line instead of leaving S to RRF's own firmware default. */
+	dampingRatio: number;
 	/** Worst-case fraction of vibration energy remaining (0..1). */
 	vibrations: number;
 	/** Internal relative smoothing penalty (tie-breaker only - see file header). Not user-facing. */
@@ -215,6 +220,7 @@ export function fitShaper(cfg: ShaperDefinition, freqBins: ArrayLike<number>, ps
 	return {
 		name: cfg.name,
 		freq: s.freq,
+		dampingRatio,
 		vibrations: s.vibrations,
 		smoothing: s.smoothing,
 		score: s.score,
@@ -350,6 +356,7 @@ function fitShaperCombined(cfg: ShaperDefinition, spectra: Array<AxisSpectrum>, 
 	return {
 		name: cfg.name,
 		freq: s.freq,
+		dampingRatio,
 		vibrations: s.vibrations,
 		smoothing: s.smoothing,
 		score: s.score,

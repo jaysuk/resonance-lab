@@ -1,15 +1,20 @@
-<!-- Spectrogram heatmap rendered straight to canvas (time -> x, frequency -> y, magnitude -> colour). -->
+<!--
+  DWC 3.6 (Vue 2.7 / Vuetify 2) copy of ../../ui37/components/SpectrogramView.vue.
+  The drawing logic is identical - Chart.js and the canvas API are framework-agnostic, and Vue
+  2.7 backported the Composition API - so only Vuetify's utility class names differ. Keep the two
+  in step when changing chart behaviour.
+-->
 <template>
 	<div class="rlab-spectrogram">
 		<div class="rlab-spectrogram-row">
-			<div class="rlab-spectrogram-ylabel text-caption text-medium-emphasis">Frequency (Hz)</div>
+			<div class="rlab-spectrogram-ylabel text-caption text--secondary">Frequency (Hz)</div>
 			<canvas ref="canvas" />
 		</div>
-		<div class="rlab-spectrogram-labels text-caption text-medium-emphasis">
+		<div class="rlab-spectrogram-labels text-caption text--secondary">
 			<span>0 Hz (bottom)</span>
 			<span>{{ spec.freqs[spec.freqs.length - 1]?.toFixed(0) ?? 0 }} Hz (top)</span>
 		</div>
-		<div class="text-caption text-medium-emphasis text-center mt-1">
+		<div class="text-caption text--secondary text-center mt-1">
 			Time (s): 0 → {{ spec.times[spec.times.length - 1]?.toFixed(0) ?? 0 }}
 		</div>
 	</div>
@@ -18,7 +23,7 @@
 <script setup lang="ts">
 import { onMounted, ref, watch } from "vue";
 
-import type { Spectrogram } from "../analysis/stft";
+import type { Spectrogram } from "../../analysis/stft";
 
 const props = defineProps<{ spec: Spectrogram }>();
 const canvas = ref<HTMLCanvasElement | null>(null);

@@ -21,8 +21,11 @@ on:
   workflow_dispatch:
     inputs:
       dwc-ref:
-        description: DuetWebControl branch/tag/sha to build against
+        description: DuetWebControl branch/tag/sha to build the DWC 3.7 package against
         default: v3.7-dev
+      dwc36-ref:
+        description: DuetWebControl branch/tag/sha to build the DWC 3.6 package against
+        default: v3.6-dev
 
 permissions:
   contents: write # create the Release and upload the asset
@@ -92,6 +95,34 @@ jobs:
         env:
           DWC_DIR: ${{ github.workspace }}/DuetWebControl
         run: npm run verify-build
+
+      # ── DWC 3.6 package ──────────────────────────────────────────────────────
+      # A second, separate ZIP: 3.6 is Vue 2.7 / Vuetify 2 / Vuex, so it is a different bundle built
+      # from src/ui36 against a different checkout. Both ship in the same release; the update checker
+      # picks the right one per generation (see each ui*/host.ts `assetPattern`).
+      - name: Checkout DuetWebControl 3.6
+        uses: actions/checkout@v4
+        with:
+          repository: Duet3D/DuetWebControl
+          ref: ${{ github.event.inputs.dwc36-ref || 'v3.6-dev' }}
+          path: DuetWebControl36
+
+      - name: Install DuetWebControl 3.6
+        working-directory: DuetWebControl36
+        run: npm install
+
+      # No dependency install into the 3.6 checkout: stage-dwc36.mjs vendors chart.js and
+      # dwc-plugin-runtime (plus their closure) into the staged tree instead, because DWC 3.6 ships
+      # chart.js 2.9 and installing v4 over it would break DWC's own graphs.
+      - name: Build installable ZIP (DWC 3.6)
+        working-directory: plugin
+        run: |
+          node scripts/stage-dwc36.mjs "$RUNNER_TEMP/rlab-dwc36"
+          (cd ../DuetWebControl36 && npm run build-plugin-pkg -- "$RUNNER_TEMP/rlab-dwc36")
+          ZIP=$(ls ../DuetWebControl36/dist/ResonanceLab-*.zip | head -1)
+          if [ -z "$ZIP" ]; then echo "::error::DWC 3.6 build produced no ZIP"; exit 1; fi
+          mv "$ZIP" "./$(basename "${ZIP%.zip}")-dwc36.zip"
+          ls -la ResonanceLab-*.zip
 
       # Release body = Conventional-Commit changelog + a footer with install instructions, the DWC
       # version built against, and the dwc-plugin-update metadata comment for the update checker.

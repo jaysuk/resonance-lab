@@ -13,15 +13,24 @@
  * pendingReload / updateChecksEnabled / setUpdateChecksEnabled / runUpdateCheck / applyUpdateNow) so
  * the shared dwc-plugin-runtime AboutDialog can drive it.
  */
+// Deep subpath imports, not the package barrel: the barrel also re-exports AboutDialog/HelpTip/
+// PluginWidgetConfigForm, which call Vue 3's `resolveComponent` — absent in Vue 2.7, so pulling the
+// barrel into this shared module would break the DWC 3.6 build. These modules import no Vue at all.
+import { applyUpdate, checkForUpdate, type UpdateResult } from "dwc-plugin-runtime/updates";
 import {
-	announceUpdate, applyUpdate, checkForUpdate, clearAnnouncedUpdate, isUpdateHostActive,
-	registerUpdateChecker, type UpdateResult,
-} from "dwc-plugin-runtime";
+	announceUpdate, clearAnnouncedUpdate, isUpdateHostActive, registerUpdateChecker,
+} from "dwc-plugin-runtime/updateHub";
 import { ref } from "vue";
 
-import i18n from "@/i18n";
-import { useMachineStore } from "@/stores/machine";
-import { LogLevel, useUiStore } from "@/stores/ui";
+import type { HostAdapter } from "./core/host";
+
+/**
+ * Set once at plugin load by whichever entry point is running (ui37/index.ts or ui36/index.ts).
+ * This module is shared by both DWC versions and runs before any component mounts, so it cannot
+ * reach a store directly - see ./core/host.
+ */
+let host: HostAdapter | null = null;
+export function setUpdateHost(h: HostAdapter): void { host = h; }
 
 const OWNER = "jaysuk";
 const REPO = "resonance-lab";
@@ -48,7 +57,7 @@ export function setUpdateChecksEnabled(on: boolean): void {
 }
 
 function currentVersion(): string {
-	const plugins = (useMachineStore().model as { plugins?: Map<string, { version?: string }> }).plugins;
+	const plugins = (host?.model() as { plugins?: Map<string, { version?: string }> } | undefined)?.plugins;
 	return plugins?.get(PLUGIN_MANIFEST_ID)?.version ?? "0.0.0";
 }
 
@@ -85,11 +94,16 @@ export async function runUpdateCheck(opts: { force?: boolean; notify?: boolean }
 		// re-hitting GitHub on every page mount.
 		safeSet(LS_LAST, String(Date.now()));
 		checking.value = true;
-		updateState.value = await checkForUpdate({ owner: OWNER, repo: REPO, currentVersion: currentVersion() });
+		updateState.value = await checkForUpdate({
+				owner: OWNER, repo: REPO, currentVersion: currentVersion(),
+				// A release ships one ZIP per DWC generation; without this the checker takes whichever
+				// *.zip GitHub lists first and could offer a 3.6 user the Vue 3 package.
+				...(host?.assetPattern ? { assetPattern: host.assetPattern } : {}),
+			});
 		syncHub();
 		if (opts.notify && updateState.value.updateAvailable && !isUpdateHostActive()) {
-			const message = i18n.global.t("plugins.resonanceLab.update.available", { version: updateState.value.latestVersion });
-			useUiStore().makeNotification(LogLevel.info, "Resonance Lab", message);
+			const message = host?.t("update.available", { version: updateState.value.latestVersion }) ?? "";
+			host?.notify("info", "Resonance Lab", message);
 		}
 	} catch {
 		// Intentionally ignored — see the contract above.
@@ -108,13 +122,12 @@ export async function applyUpdateNow(): Promise<void> {
 	if (!r?.assetUrl || !r.assetName) {
 		return;
 	}
-	const machine = useMachineStore();
 	applying.value = true;
 	try {
 		await applyUpdate({
 			assetUrl: r.assetUrl,
 			assetName: r.assetName,
-			installPlugin: (filename, blob, start) => machine.installPlugin(filename, blob, start),
+			installPlugin: (filename, blob, start) => host!.installPlugin(filename, blob, start),
 		});
 		pendingReload.value = true;
 		clearAnnouncedUpdate(PLUGIN_MANIFEST_ID); // just applied - nothing left to announce

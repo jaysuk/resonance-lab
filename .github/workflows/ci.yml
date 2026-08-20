@@ -7,7 +7,7 @@ on:
 
 jobs:
   test:
-    uses: jaysuk/dwc-plugin-test-kit/.github/workflows/dwc-plugin-ci.yml@v0.2.2
+    uses: jaysuk/dwc-plugin-test-kit/.github/workflows/dwc-plugin-ci.yml@v0.2.6
     with:
       dwc-ref: v3.7-dev
-      kit-ref: v0.2.2
+      kit-ref: v0.2.6

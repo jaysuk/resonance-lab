@@ -37,16 +37,21 @@ const out = `
 ---
 
 ### 📦 Install
-1. Download \`ResonanceLab-${pkgVersion}.zip\` from the **Assets** below.
+1. Download the ZIP for **your** DuetWebControl from the **Assets** below — they are different
+   builds, not alternatives:
+   - DWC **3.7** and newer → \`ResonanceLab-${pkgVersion}.zip\`
+   - DWC **3.6** → \`ResonanceLab-${pkgVersion}-dwc36.zip\`
 2. In DuetWebControl, go to **Settings → General → Plugins** and click **Install Plugin**.
 3. Select the downloaded ZIP and accept the third-party-plugin prompt.
-4. Reload DWC if asked. Resonance Lab appears in the **Plugins** menu, and its summary panel is
-   available in Flexible Layouts under **Add widget → Plugins**.
+4. Reload DWC if asked. Resonance Lab appears in the **Plugins** menu. On DWC 3.7 its summary panel
+   is also available in Flexible Layouts under **Add widget → Plugins**.
 
-> 🔧 Built against ${dwcBuiltAgainst}. Use a DuetWebControl build at or near this version.
-> An accelerometer configured with \`M955\` is required for measurements.
+> 🔧 The 3.7 package is built against ${dwcBuiltAgainst}; the 3.6 package against the DWC 3.6 branch.
+> DWC refuses a package whose \`dwcVersion\` doesn't match, so picking the wrong one is safe but
+> won't install. An accelerometer configured with \`M955\` is required for measurements.
 
 <!-- dwc-plugin-update ${JSON.stringify({ version: pkgVersion, dwcVersion: requiredDwc, asset: `ResonanceLab-${pkgVersion}.zip` })} -->
+<!-- dwc-plugin-update ${JSON.stringify({ version: pkgVersion, dwcVersion: "3.6", asset: `ResonanceLab-${pkgVersion}-dwc36.zip` })} -->
 `;
 
 process.stdout.write(out.replace(/^\n/, ""));

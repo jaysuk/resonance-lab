@@ -11,6 +11,7 @@
  *    we arm the recorder around it.
  */
 import { generateFixedExcitation, generateSweep, type ShaperState, type SweepOptions, type SweepProgram } from "./sweep";
+import { mapAccelerometers } from "./tools";
 
 export interface MachineIO {
 	/** Send a G-code line and resolve when it has completed (DWC sendCode semantics). */
@@ -57,24 +58,21 @@ export interface MachineIO {
 export interface AccelerometerRef {
 	/** M956 P parameter (board CAN address, e.g. "0" or "121.0"). */
 	id: string;
-	/** Display label (board name). */
+	/** Display label (board name, or "T<n> <name> — <board>" when tied to a tool-changer tool). */
 	label: string;
+	/** Tool number this accelerometer's board is wired to, when derivable (see ./tools.ts). */
+	toolNumber?: number;
+	/** That tool's configured name (M563 P<n> S"<name>"), when it has one. */
+	toolName?: string;
 }
 
-/** Discover configured accelerometers from the object model (M955 creates boards[].accelerometer). */
+/**
+ * Discover configured accelerometers from the object model (M955 creates boards[].accelerometer),
+ * labelled by tool on a tool-changer. Delegates to ./tools.ts, which is worth reading before editing
+ * this - the tool/board association isn't in the object model directly and has to be derived.
+ */
 export function findAccelerometers(model: unknown): Array<AccelerometerRef> {
-	const boards = (model as { boards?: Array<{ accelerometer?: unknown; canAddress?: number | null; shortName?: string; name?: string } | null> })?.boards ?? [];
-	const found: Array<AccelerometerRef> = [];
-	for (let i = 0; i < boards.length; i++) {
-		const b = boards[i];
-		if (b && b.accelerometer) {
-			const can = b.canAddress ?? 0;
-			// M955/M956 address an accelerometer as <canAddress>.<index> for CAN boards (e.g. P124.0);
-			// only the mainboard's own accelerometer is plain P0.
-			found.push({ id: can > 0 ? `${can}.0` : "0", label: b.shortName || b.name || `Board ${can}` });
-		}
-	}
-	return found;
+	return mapAccelerometers(model);
 }
 
 /**

@@ -50,7 +50,8 @@
 		"conflict": "The {axes} move excited the same sensor channel as another axis — frame coupling (bedslinger?) or loose mounting.",
 		"coupling": "High cross-axis coupling ({pct}%) — check the accelerometer is rigidly mounted.",
 		"apply": "Apply M955",
-		"applied": "Orientation applied (I{i}). Add the M955 I parameter to config.g to keep it."
+		"applied": "Orientation applied (I{i}). Add the M955 I parameter to config.g to keep it.",
+		"save": "Save to config.g"
 	},
 	"belts": {
 		"notCoreXY": "Belt comparison needs CoreXY-style kinematics (diagonal belt paths). Your machine reports a different kinematics type.",
@@ -85,6 +86,28 @@
 		"inspect": "Inspect",
 		"back": "All axes",
 		"fromOverlay": "{axis} axis (from overlay)"
+	},
+	"config": {
+		"scopeTitle": "Save {shaper} {'@'} {freq} Hz to config.g",
+		"scopeBody": "RRF has one input shaper for the whole machine — choose whether this replaces it for every tool, or only re-asserts it each time this tool is picked up.",
+		"scopeAll": "All tools",
+		"scopeAllHint": "Writes the machine-wide M593 into config.g.",
+		"scopeTool": "{tool} only",
+		"scopeToolHint": "Writes M593 into {tool}'s own tool-change macro, re-sent every time it's picked up.",
+		"cancel": "Cancel",
+		"save": "Save",
+		"backupNote": "The original file is backed up alongside it before anything is written.",
+		"appendedNote": "No existing {code} line was found in {file} — this appends a new one.",
+		"disabledDuplicateNote": "There's also a commented-out {code} line in {file} — it stays disabled, but is easy to mistake for the current setting.",
+		"crossFileNote": "Note: {note}",
+		"blocked": "{reason}",
+		"saved": "Saved to config.g.",
+		"restartTitle": "Restart to apply?",
+		"restartHint": "RRF only re-reads config.g on a full restart, or if you tell it to run config.g again.",
+		"restartNow": "Restart now (M999)",
+		"runConfigNow": "Re-run config.g",
+		"skipRestart": "I'll restart later",
+		"close": "Close"
 	},
 	"help": {
 		"title": "How to read these graphs",
@@ -134,6 +157,7 @@
 		"compare": "Compare shapers",
 		"apply": "Apply {shaper}",
 		"applied": "{shaper} {'@'} {freq} Hz applied (M593). Add it to config.g to keep it after restarts.",
+		"save": "Save to config.g",
 		"verify": "Verify",
 		"verified": "Verified with {shaper} {'@'} {freq} Hz: {reduction}% of vibration energy removed.",
 		"before": "Before (no shaper)",

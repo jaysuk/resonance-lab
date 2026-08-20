@@ -3,8 +3,8 @@ import { describe, expect, it } from "vitest";
 import { fftInPlace, rfft } from "../src/analysis/fft";
 import { findPeaks } from "../src/analysis/peaks";
 import {
-	estimateRemainingVibrations, estimateShaperResponse, estimateSmoothing, findBestShaper,
-	findBestShaperCombined, fitShaper, normalizeToFrequencies,
+	DEFAULT_DAMPING_RATIO, estimateRemainingVibrations, estimateShaperResponse, estimateSmoothing,
+	findBestShaper, findBestShaperCombined, fitShaper, normalizeToFrequencies,
 } from "../src/analysis/recommend";
 import { SHAPERS } from "../src/analysis/shapers";
 import { kaiserWindow, welchPsd, welchSegmentLength } from "../src/analysis/spectrum";
@@ -127,6 +127,16 @@ describe("recommendation engine", () => {
 		const fit = fitShaper(SHAPERS.find((c) => c.name === "mzv")!, freqs, norm)!;
 		expect(Math.abs(fit.freq - 52)).toBeLessThan(6);
 		expect(fit.vibrations).toBeLessThan(0.25);
+	});
+
+	it("reports the damping ratio the impulse train was actually built with, for a complete M593", () => {
+		const { freqs, psd } = syntheticPsd(45);
+		const norm = normalizeToFrequencies(freqs, psd);
+		const mzv = SHAPERS.find((c) => c.name === "mzv")!;
+		expect(fitShaper(mzv, freqs, norm)!.dampingRatio).toBe(DEFAULT_DAMPING_RATIO);
+		// A caller-supplied ratio (e.g. a measured zeta) must come through unchanged, not be silently
+		// dropped once it's only used for shaper construction and not scoring.
+		expect(fitShaper(mzv, freqs, norm, { dampingRatio: 0.075 })!.dampingRatio).toBe(0.075);
 	});
 
 	it("findBestShaper returns a verdict that beats doing nothing, preferring simpler shapers", () => {
