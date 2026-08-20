@@ -43,9 +43,10 @@ export function createHost(): HostAdapter {
 		getFileList: (dir) => (machine() as unknown as MachineExtras).getFileList(dir),
 		installPlugin: (filename, blob, start) => (machine() as unknown as MachineExtras).installPlugin(filename, blob, start),
 
-		// The 3.7 package is the plain "<name>-<version>.zip"; the negative lookahead keeps it from
-		// matching the 3.6 sibling asset in the same release.
-		assetPattern: /^(?!.*-dwc36\.zip$).*\.zip$/i,
+		// The 3.7 package is the plain "<name>-<version>.zip"; the negative lookaheads keep it from
+		// matching the 3.6 sibling asset, or a debug -srcmap.zip, in the same release - either would
+		// otherwise win `find()`'s first-match-wins asset selection ahead of the real package.
+		assetPattern: /^(?!.*-(dwc36|srcmap)\.zip$).*\.zip$/i,
 
 		notify: (level, title, message) => { useUiStore().makeNotification(LEVELS[level], title, message); },
 		t: (key, args) => i18n.global.t(`plugins.resonanceLab.${key}`, args ?? {}),

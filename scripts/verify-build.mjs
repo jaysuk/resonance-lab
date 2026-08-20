@@ -59,9 +59,12 @@ const res = spawnSync(bin, [stage], { stdio: "inherit", env: process.env, shell:
 
 // The kit builds the ZIP inside `stage`, which is about to be deleted - copy it out to the repo root
 // first (build.bat's own build lands it there too), or release.yml's later `plugin/ResonanceLab-*.zip`
-// glob finds nothing and silently ships a release missing the DWC 3.7 package.
+// glob finds nothing and silently ships a release missing the DWC 3.7 package. The build also emits a
+// separate -srcmap.zip alongside it - deliberately NOT copied out, or that glob picks it up too and
+// the update checker's assetPattern (which only excludes -dwc36.zip) can match it before the real
+// package, offering a sourcemap archive as an "update" (same class of bug build.bat itself once hit).
 for (const f of readdirSync(stage)) {
-	if (f.endsWith(".zip")) {
+	if (f.endsWith(".zip") && !f.endsWith("-srcmap.zip")) {
 		copyFileSync(join(stage, f), join(repo, f));
 	}
 }
