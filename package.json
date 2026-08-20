@@ -10,7 +10,7 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "typecheck": "node scripts/typecheck.mjs",
-    "verify-build": "dwc-plugin-verify-build",
+    "verify-build": "node scripts/verify-build.mjs",
     "changelog": "node scripts/changelog.mjs"
   },
   "dependencies": {
