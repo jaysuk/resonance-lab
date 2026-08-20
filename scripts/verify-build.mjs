@@ -14,7 +14,7 @@
  *   DWC_DIR=/path/to/DuetWebControl-3.7  node scripts/verify-build.mjs
  */
 import { spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { copyFileSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -56,5 +56,15 @@ if (ignore.length) {
 
 const bin = join(repo, "node_modules", ".bin", process.platform === "win32" ? "dwc-plugin-verify-build.cmd" : "dwc-plugin-verify-build");
 const res = spawnSync(bin, [stage], { stdio: "inherit", env: process.env, shell: process.platform === "win32" });
+
+// The kit builds the ZIP inside `stage`, which is about to be deleted - copy it out to the repo root
+// first (build.bat's own build lands it there too), or release.yml's later `plugin/ResonanceLab-*.zip`
+// glob finds nothing and silently ships a release missing the DWC 3.7 package.
+for (const f of readdirSync(stage)) {
+	if (f.endsWith(".zip")) {
+		copyFileSync(join(stage, f), join(repo, f));
+	}
+}
+
 rmSync(stage, { recursive: true, force: true });
 process.exit(res.status ?? 1);
