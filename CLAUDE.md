@@ -89,6 +89,24 @@ first if only the 3.6 build breaks after adding a new shared module.
   write replaces `sessions.value` wholesale with a new `Map` rather than mutating it in place; this
   is the one part of this file that must not be "simplified" back to in-place mutation, or the DWC
   3.6 build silently stops updating the UI on a tool change while 3.7 keeps working fine.
+- **The `selectedAccel` → `activeTool` sync watcher in `useResonanceLab.ts` needs `{ immediate:
+  true }`.** The accelerometer picker's auto-select chain is three watchers: `accelItems` (immediate,
+  calls `autoSelectAccel()` synchronously on setup), `currentToolNumber` (follows tool changes), and a
+  plain `watch(selectedAccel, v => { activeTool.value = v?.toolNumber ?? -1 })` that mirrors the pick
+  into per-tool state. Without `immediate` on that third watcher, it never observes the *initial*
+  synchronous write `autoSelectAccel()` made during the first watcher's own immediate run (it wasn't
+  registered yet when that write happened), so `activeTool` sticks at state.ts's `-1` default until
+  some later change to `selectedAccel` happens to fire it — which surfaced as a tool-changer's "save
+  shaper" dialog offering "T-1 only" as a real button (`planShaperSave` now also rejects a negative
+  `toolNumber`, not just `null`, as a second line of defence). If a fourth watcher is ever chained onto
+  `selectedAccel`, check whether it needs the same flag.
+- **`tools.ts`'s tool↔accelerometer derivation is only as good as config.g's own consistency.** It
+  reads `tools[N].extruders[0]` to find the driving board — if a tool's `M563 ... D<n>` extruder index
+  doesn't actually match the board its `H`/`F` params point at (e.g. a copy-paste `D2` left over from
+  another tool's definition), the derivation faithfully reproduces that mismatch: it resolves the
+  *wrong* board (often the mainboard) and the real toolboard's accelerometer shows up unlabelled. This
+  is a config.g bug, not a plugin bug, but it presents identically to a broken derivation — cross-check
+  the tool's `D`/`H`/`F` params against each other before assuming the code is wrong.
 
 ## Known constraints and gotchas (checked against the firmware source — don't re-derive)
 
@@ -180,19 +198,43 @@ first if only the 3.6 build breaks after adding a new shared module.
   thing that lets a `dwc-plugin-runtime/<sub>` import resolve its *types* there — without it every
   one fails with TS2307. Don't drop below 0.8.7.
 - **A release ships two ZIPs, and the update checker must not mix them up.** `checkForUpdate`
-  defaults to the first asset matching `/\.zip$/i`, which would offer a 3.6 user the Vue 3 package.
-  Each host therefore sets `assetPattern` (`ui37`: a negative lookahead excluding `-dwc36.zip`;
-  `ui36`: only `-dwc36.zip`) and `updateCheck.ts` passes it through. If a third target is ever added,
-  that pattern is the thing to update. `scripts/release-footer.mjs` likewise emits one
-  `dwc-plugin-update` metadata comment per asset.
+  defaults to the first asset matching `/\.zip$/i` (first-match-wins over `release.assets` in upload
+  order), which would offer a 3.6 user the Vue 3 package. Each host therefore sets `assetPattern`
+  (`ui37`: negative lookaheads excluding `-dwc36.zip` **and** `-srcmap.zip`; `ui36`: only
+  `-dwc36.zip`) and `updateCheck.ts` passes it through. If a third target is ever added, that pattern
+  is the thing to update. `scripts/release-footer.mjs` likewise emits one `dwc-plugin-update` metadata
+  comment per asset.
+- **The DWC 3.7 build also emits a `-srcmap.zip` alongside the real package** (`dwc-plugin-verify-
+  build`'s underlying `build-plugin-pkg.js` writes both). It must never reach the GitHub Release: it
+  alphabetically uploads *before* the plain `.zip`, so a 3.7 `assetPattern` that didn't also exclude it
+  let `checkForUpdate` match the sourcemap archive first and offer it as an "update" (v1.1.0 shipped
+  this way before it was caught and fixed). `scripts/verify-build.mjs` deliberately leaves it in the
+  build's temp stage rather than copying it out — see below.
 
 ## Build / release
 
 - `npm test` needs no DWC checkout (kit-based mount tests). `DWC_DIR=<path> npm run typecheck` /
   `npm run verify-build` need a real DuetWebControl checkout
-  (`C:\Users\live\Documents\Github\DuetWebControl`, built against `v3.7-dev`). `typecheck` skips
-  `src/ui36` (via `dwcTypecheckIgnore` in `package.json`) because those sources only resolve against
-  a 3.6 tree; the 3.6 UI is type-checked by its own build instead, which runs `fork-ts-checker`.
+  (`C:\Users\live\Documents\Github\DuetWebControl`, built against `v3.7-dev`). Both skip `src/ui36`
+  (via `dwcTypecheckIgnore` in `package.json`) because those sources only resolve against a 3.6 tree;
+  the 3.6 UI is type-checked/built by its own build instead (`build36.bat`, `fork-ts-checker`).
+- **`verify-build` has its own scoping wrapper, `scripts/verify-build.mjs`, mirroring
+  `scripts/typecheck.mjs` — this is not optional.** The stock `dwc-plugin-verify-build` builds
+  whichever `pluginDir` it's pointed at whole; before this wrapper existed, CI ran it unwrapped
+  against the real repo root and it type-checked/bundled `src/ui36` against the DWC 3.7 checkout too,
+  failing on the same `@/store`/`@/routes`/Vuetify-prop-type errors `typecheck.mjs` was already built
+  to avoid (this broke the very first v1.1.0 CI run — `npm run typecheck` passing locally is not
+  evidence `npm run verify-build` will). The wrapper stages a temp `src/` excluding
+  `dwcTypecheckIgnore`, copies `plugin.json`, and **symlinks `node_modules` from the repo root into
+  the stage** — without that symlink, DWC's `build-plugin-pkg.js` sees a `package.json` with no
+  adjacent `node_modules`, decides dependencies are "missing", and tries `npm install` inside the
+  stage, which has no lockfile context and fails outright in CI/sandboxed environments with no
+  network. (Confirmed empirically that `rmSync(stage, {recursive:true})` only unlinks a symlinked
+  child, never recurses into or deletes the target — safe to clean up the stage afterwards.)
+  Because the ZIP is built *inside* that stage, the wrapper must copy it (but not its `-srcmap.zip`
+  sibling, see above) back out to the repo root before deleting the stage, or `release.yml`'s
+  `plugin/ResonanceLab-*.zip` glob finds nothing for the 3.7 asset (this also broke v1.1.0's first
+  publish attempt — the release had only the 3.6 ZIP attached).
 - **Two builds, two ZIPs.** Both must be produced and tested for a release that claims 3.6 support:
   - **`build.bat`** → `ResonanceLab-<version>.zip` (DWC 3.7+, `dwcVersion: 3.7`).
   - **`build36.bat`** → `ResonanceLab-<version>-dwc36.zip` (DWC 3.6, `dwcVersion: 3.6`). It first
@@ -223,6 +265,18 @@ first if only the 3.6 build breaks after adding a new shared module.
   `release.yml`, which builds the ZIP against DWC and auto-publishes a GitHub Release with a
   generated changelog. The tag must match `plugin.json`'s version exactly (no `v` prefix inside the
   file) or the workflow fails fast rather than shipping a mismatched build.
+- **Fixing a tag whose Release run failed before publishing anything is a tag move, not a version
+  bump.** If no GitHub Release exists yet for that tag (check `gh release view v<x>` — a failed
+  `release.yml` run stops before the publish step), a normal follow-up commit + `git tag -f
+  v<version>` + `git push origin v<version> --force` reuses the same version with no history rewrite
+  needed on `main` (only the tag ref moves). Once a Release *has* published successfully, bump the
+  version instead — don't move a tag out from under a real release.
+- **`softprops/action-gh-release` does not delete stray assets on a republish.** Re-running
+  `release.yml` against a moved tag re-uploads/overwrites whatever's in its current `files:` glob, but
+  leaves any previously-uploaded asset that glob no longer matches (e.g. a `-srcmap.zip` uploaded by
+  an earlier, buggier run) still attached. After moving a tag to fix a bad release, diff
+  `gh release view v<x> --json assets` against what should actually ship and `gh release delete-asset`
+  anything left over by hand.
 
 ## Testing conventions
 
