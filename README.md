@@ -14,7 +14,9 @@ download the ZIP and install it via **Settings → General → Plugins → Insta
   and measure motor quality (vibration at multiples of a motor's own full-step frequency, isolating
   the motor and driver from the machine's structural response).
 - **Recommend** — suggest the input-shaper type and frequency (`M593`) that removes the most
-  residual vibration, weighing every measured axis at once when more than one was swept.
+  residual vibration, weighing every measured axis at once when more than one was swept; on
+  RepRapFirmware **3.7.0-rc.1+**, also search for and apply a motor's own current-waveform
+  correction (`M970.3`/`M569.2`) to reduce detent-torque and coil-imbalance vibration at the source.
 - **Verify** — re-measure with the shaper applied and confirm the ringing is gone before saving.
 
 Generated test G-code is uploaded to its own folder (`0:/sys/resonanceLab` by default, configurable

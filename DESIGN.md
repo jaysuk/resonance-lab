@@ -38,7 +38,15 @@ ecosystems or their tools are referenced in code, comments, or documentation.
    speeds, measuring vibration at multiples of the motor's own full-step frequency. This measures the
    motor and driver themselves rather than the machine's structural response — see `motorHarmonics.ts`
    below. Analysis-only: it emits no `M970.3`/`M569.2` driver-correction G-code and needs no board or
-   driver capability beyond `M955`/`M956`.
+   driver capability beyond `M955`/`M956` — unlike mode 8 below, it works on any RRF version.
+8. **Motor waveform tuning** — a least-squares search (see `motorTuning.ts` below) for the
+   current-waveform correction that minimises vibration at one harmonic of a motor's electrical
+   cycle, then writes it with `M970.3` (phase stepping) or `M569.2` (the driver's sine table).
+   Gated on RepRapFirmware **3.7.0-rc.1+** (fails closed on anything older or unparseable, per
+   `firmwareVersion.ts`) — the command may simply not exist below that version. The driver chip
+   itself (needed to know whether it supports a waveform correction at all) is identified by
+   reading its IOIN register over `M569.2 R` (see `driverChip.ts`), since the object model carries
+   no chip-type field.
 
 ## Analysis core (`src/analysis/`, pure TS, no Vue, fully unit-tested)
 
@@ -86,15 +94,31 @@ ecosystems or their tools are referenced in code, comments, or documentation.
   comparison and leaves the motor's own behaviour). Orders map to causes the same way the stock DWC
   Input Shaping plugin's motor tuning tab does: 1× = detent torque/step ripple, 0.5× = coil current
   imbalance, 0.25×/0.75× = distorted current waveform.
+- `motorTuning.ts` — the waveform-correction search: models a correction as a vector added to the
+  motor's own (unknown) error vector, which makes the squared-amplitude response **linear** in four
+  unknowns, so a least-squares fit over a handful of probe measurements finds the optimum in closed
+  form (no iteration). Measures and fits both move directions separately then combines them, since a
+  rotor-fixed error component shifts by the load angle and flips sign with direction. 10 probe moves
+  per harmonic with a free phase (`M970.3`), 6 with phase constrained to 0/180 (`M569.2`'s sine
+  table, which can't represent anything else).
+
+Two small pure modules in `src/config/` support the tuning gate, independent of the config-editing
+modules described under "Config persistence" in `CLAUDE.md`: `firmwareVersion.ts` (semver-ish
+comparison that strips the STM32 port's parenthesised version suffix, e.g. `3.7.0-rc.1(CAN0)`,
+before parsing - skipping that step would fail the gate closed on exactly the boards phase stepping
+targets) and `driverChip.ts` (identifies a TMC chip from its IOIN register's VERSION byte, read over
+`M569.2 R<addr>` - the same method as the sibling `duet-tmc-tuner` plugin, since the object model has
+no chip-type field at all).
 
 Capture I/O lives in `src/capture/`: `csv.ts` (RRF accelerometer CSV parser, incl. overflow flags,
 and `cropCaptureToDuration` for oversized/self-timed recordings), `sweep.ts` (swept-excitation
 G-code generator with machine-limit guards), `motorMoves.ts` (derives a Cartesian direction that
 drives exactly one motor at a constant step rate from the kinematics forward matrix, plus the
-trapezoidal-move math for its constant-speed window), and `orchestrator.ts` (turns a measurement
-request into the `M955`/`M956`/G-code sequence via an injected `MachineIO`, so every sequence is
-unit-testable without a printer). Generated program files (the `.g` macros that drive the test
-motion) are uploaded to a configurable folder (`DEFAULT_PROGRAM_DIR` = `0:/sys/resonanceLab`,
+trapezoidal-move math for its constant-speed window - and, for the tuning task, a round-trip
+recording mode so both move directions are captured in one pass), and `orchestrator.ts` (turns a
+measurement request into the `M955`/`M956`/G-code sequence via an injected `MachineIO`, so every
+sequence is unit-testable without a printer). Generated program files (the `.g` macros that drive
+the test motion) are uploaded to a configurable folder (`DEFAULT_PROGRAM_DIR` = `0:/sys/resonanceLab`,
 overridable via `programDir` on the capture options and the page's Settings dialog) rather than bare
 `0:/sys` - best-effort deleted right after each capture completes. The captured CSV itself is NOT
 relocatable: RRF's M956 `F` filename is hardcoded to combine with `0:/sys/accelerometer/` regardless

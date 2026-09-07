@@ -51,14 +51,15 @@ first if only the 3.6 build breaks after adding a new shared module.
   subpath imports (`dwc-plugin-runtime/diagnostics` etc.), never the barrel, which re-exports Vue 3
   components and would break the Vue 2 build.
 - **Single lab page** (`src/ui37/ResonanceLabPage.vue`, `src/ui36/ResonanceLabPage.vue`) — a left
-  task rail (8 tasks, grouped into 5 "goals" + a "Diagnostics" drawer of 3) drives a `method` ref;
-  the right panel renders only that task's own params (a `TASKS` array holds each task's
-  icon/`usesAxis`/`params`) plus a live `durationEstimate` and a result view specific to that task's
-  output shape.
+  task rail (9 tasks, up to 6 "goals" (`motortune` only when the firmware gate below passes) + a
+  "Diagnostics" drawer of 3) drives a `method` ref; the right panel renders only that task's own
+  params (a `TASKS` array holds each task's icon/`usesAxis`/`params`) plus a live `durationEstimate`
+  and a result view specific to that task's output shape.
 - **Tasks**: `sweep` (shaper calibration, can run several axes at once → combined recommendation),
   `belts` (CoreXY tension comparison), `profile` (speed-sweep vibration), `axescheck` (accelerometer
-  orientation → `M955 I`), `motor` (motor-quality harmonic analysis — see below), `excite`
-  (fixed-frequency + spectrogram), `move` (quick native capture), `custom` (user-supplied G-code).
+  orientation → `M955 I`), `motor` (motor-quality harmonic analysis — see below), `motortune` (motor
+  waveform-correction search — see below, gated on RRF ≥3.7.0-rc.1), `excite` (fixed-frequency +
+  spectrogram), `move` (quick native capture), `custom` (user-supplied G-code).
 - **`motor` task** (`src/analysis/motorHarmonics.ts`, `src/capture/motorMoves.ts`) — measures the
   motor and driver themselves rather than the machine's structural response, unlike every other task.
   Runs a motor-isolating move (on core kinematics, the column of `move.kinematics.forwardMatrix`
@@ -79,6 +80,36 @@ first if only the 3.6 build breaks after adding a new shared module.
   accelerometer's Nyquist frequency; a motor whose axis doesn't report `microstepping.value` is
   omitted from the motor picker entirely rather than assuming 16, since a wrong assumed microstepping
   would produce a confident analysis at the wrong frequency.
+- **`motortune` task** (`src/analysis/motorTuning.ts`, `src/config/firmwareVersion.ts`,
+  `src/config/driverChip.ts`) — searches for and writes a motor's current-waveform correction, unlike
+  `motor`'s analysis-only measurement. **Gated on `boards[].firmwareVersion` ≥ `3.7.0-rc.1` on both
+  the mainboard and the driver's own board** (fails closed on missing/unparseable versions — the task
+  is hidden from the rail entirely below that version, not merely disabled, since `M970.3`/`M569.2`'s
+  waveform-correction sub-command may not exist in older firmware at all). The STM32 port appends a
+  parenthesised suffix to its version string (`3.7.0-rc.1(CAN0)`, `3.7.0-beta.1(no 3rd order
+  motion)` — with a space, despite `Version.h`'s own comment claiming otherwise); `firmwareVersion.ts`
+  strips it before parsing, or every STM32H7 board — the main phase-stepping platform — would fail
+  the gate. **Never hardcode a board list** (checked: the stock DWC plugin's own list has already
+  grown once, `["MB6HC"]` → `["MB6HC","EXP3HC","EXP1HCL","M23CL"]`, and the object model carries no
+  driver chip-type field to check against anyway) — command choice comes from `axis.phaseStep`
+  (`M970.3`, free phase, harmonics 2 & 4, if true; else `M569.2`'s sine table, phase constrained to
+  0/180, harmonic 4 only — harmonic 2/coil-imbalance isn't representable there) and a runtime
+  query-form probe before any write. The chip itself (informative only, never gating) is identified
+  by reading its IOIN register's VERSION byte over `M569.2 P<drv> R<addr>` (UART parts at `0x06`, SPI
+  at `0x04`) — the same method the sibling `duet-tmc-tuner` plugin uses, since this is the only
+  reliable way to tell a TMC5160/2240 (has a waveform correction) from a TMC2208/2209 (doesn't) on
+  the STM32 port. **The first such register read after a page load is often stale** (RRF returns a
+  cached/empty value before the driver is actually read) — `detectChip()` retries up to 4× with a
+  200 ms gap; don't remove that loop. The search itself models a correction as a vector added to the
+  motor's own error vector, making the squared-amplitude response linear in four unknowns, so a
+  least-squares fit finds the optimum in closed form; both move directions are measured and fit
+  separately then combined, since a rotor-fixed error component shifts by the load angle and flips
+  sign with direction. **Always snapshots the driver's prior correction from the probe reply before
+  the first write, and restores it on cancel/error/Discard** — a partially-tuned driver left behind
+  after an abort is silent and the user has no way to know. `M970.3`/`M569.2` reach CAN-connected
+  expansion-board drivers too (confirmed: the CAN message table for `M970.3` lives in the separate
+  `Duet3D/CANlib` repo, not RepRapFirmware itself — a missing `EutProcessM970Point3`-style handler in
+  the firmware repo proves nothing, since generic CAN commands are table-driven in CANlib).
 - **Analysis core** (`src/analysis/`, pure TS, fully unit-tested, zero Vue/store deps): `fft.ts`,
   `spectrum.ts` (Welch PSD), `shapers.ts` (RRF's MZV/ZVD/ZVDD/ZVDDD/EI2/EI3 per `AxisShaper.cpp`),
   `recommend.ts` (the tuning engine — `findBestShaper` single-axis, `findBestShaperCombined`
