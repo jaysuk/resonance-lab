@@ -491,12 +491,20 @@ export interface MotorPointCaptureOptions {
 	expectedSampleRate?: number;
 	/** Feedrate for the positioning move to the start (mm/min). */
 	travelFeedrate?: number;
+	/**
+	 * Record both directions in one capture (out, then back to start), for the tuning search: a
+	 * rotor-fixed error component shifts by the load angle, which flips sign with direction, so both
+	 * directions must be measured to fit a correction that isn't wrong in reverse. The outbound and
+	 * return legs are analysed as two separate windows (see analysisWindow's offsetSec).
+	 */
+	roundTrip?: boolean;
 }
 
 /**
  * Record one motor-isolating pass at constant speed: position to the move's start, then arm and
- * execute the pass in one line. No program file is uploaded (the move is short and inline, like
- * runSpeedPointCapture), so there's nothing to clean up afterwards.
+ * execute the pass (or, with `roundTrip`, the pass and back) in one line. No program file is
+ * uploaded (the move is short and inline, like runSpeedPointCapture), so there's nothing to clean up
+ * afterwards.
  */
 export async function runMotorPointCapture(io: MachineIO, options: MotorPointCaptureOptions): Promise<CaptureRun> {
 	const m = options.move;
@@ -508,13 +516,17 @@ export async function runMotorPointCapture(io: MachineIO, options: MotorPointCap
 	await sendChecked(io, `G1 ${axisWords(m, m.start)} F${travelFeedrate} M400`);
 
 	const window = constantSpeedWindow(m);
-	const samples = Math.min(200000, Math.ceil(1.05 * rate * (window.start + 0.9 * window.duration + 0.15)));
+	const roundTripExtra = options.roundTrip ? window.moveDuration : 0;
+	const samples = Math.min(200000, Math.ceil(1.05 * rate * (roundTripExtra + window.start + 0.9 * window.duration + 0.15)));
+	const moves = options.roundTrip
+		? `G1 ${axisWords(m, m.end)} F${m.feedrate} G1 ${axisWords(m, m.start)} F${m.feedrate} M400`
+		: `G1 ${axisWords(m, m.end)} F${m.feedrate} M400`;
 	const runsBefore = io.accelRuns?.(options.accelerometer.id);
-	await sendChecked(io, `M956 P${options.accelerometer.id} S${samples} A0 F"${name}" G1 ${axisWords(m, m.end)} F${m.feedrate} M400`);
+	await sendChecked(io, `M956 P${options.accelerometer.id} S${samples} A0 F"${name}" ${moves}`);
 
 	return {
 		csvPath,
-		program: { lines: [], pulses: 1, durationSec: window.moveDuration, maxExcursion: m.distance / 2 },
+		program: { lines: [], pulses: options.roundTrip ? 2 : 1, durationSec: window.moveDuration, maxExcursion: m.distance / 2 },
 		accelId: options.accelerometer.id,
 		runsBefore,
 	};

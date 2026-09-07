@@ -44,6 +44,7 @@
 		"profile": "Vibration profile (speed sweep)",
 		"axescheck": "Accelerometer orientation check",
 		"motor": "Motor quality (harmonic analysis)",
+		"motortune": "Motor waveform tuning",
 		"excite": "Excite one frequency (diagnostic)"
 	},
 	"orientation": {
@@ -91,6 +92,23 @@
 			"moderate": "moderate",
 			"high": "high"
 		}
+	},
+	"motorTune": {
+		"chipDetected": "Detected {chip} on driver {drv}",
+		"chipUnknown": "Could not identify the chip — relying on the driver's own response",
+		"chipUnsupported": "{chip} does not support waveform correction — a TMC5160 or TMC2240 is required",
+		"stepDirHint": "This driver uses its sine table, so harmonic 2 (coil imbalance) can't be corrected — enable phase stepping with M970 to tune it too.",
+		"status": "Measuring harmonic {h} at magnitude {mag}°, phase {phase}° — move {n}/{total}",
+		"improved": "Harmonic {h}: vibration reduced from {before} to {after} ({pct}%)",
+		"noImprovement": "Harmonic {h}: no correction improved the vibration, it stays disabled",
+		"summary": "Improved {improved} of {total} harmonics",
+		"summaryNone": "No correction improved the vibration — the driver is left uncorrected",
+		"resultCodes": "The corrections below are active now. Add them to config.g to make them permanent:",
+		"resultCodesPhaseStepping": "The corrections below are active now. Add them to config.g after the M970 command that enables phase stepping to make them permanent:",
+		"keep": "Keep",
+		"discard": "Discard",
+		"reverted": "Reverted to the previous correction.",
+		"unsupported": "This driver did not accept a waveform correction — check it supports a TMC5160/TMC2240 sine table and try again."
 	},
 	"multi": {
 		"headline": "Per-axis resonance",
@@ -246,6 +264,12 @@
 			"blurb": "Runs one motor at a range of constant speeds and measures vibration at multiples of its full-step frequency — full-step ripple, coil current imbalance and current-waveform distortion all show up at different orders. Only Z is testable on non-core kinematics, and its low step rate couples poorly to the accelerometer.",
 			"axisNote": "Tests one motor at a time",
 			"run": "Constant-speed passes driving one motor · all axes must be homed"
+		},
+		"motortune": {
+			"title": "Motor waveform tuning",
+			"blurb": "Searches for the current-waveform correction that minimises one motor's vibration, then writes it to the driver (M970.3 in phase-stepping mode, or the driver's sine table otherwise). Input shaping is disabled and the machine moves repeatedly while this runs.",
+			"axisNote": "Tunes one motor at a time",
+			"run": "Repeated round-trip passes driving one motor while probing corrections · all axes must be homed"
 		},
 		"excite": {
 			"title": "Excite one frequency",

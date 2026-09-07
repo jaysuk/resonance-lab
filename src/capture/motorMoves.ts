@@ -216,11 +216,16 @@ export function fullStepFrequency(m: MotorMove): number {
 	return ((m.feedrate / 60) * m.stepFactor * m.fullStepsPerMm);
 }
 
-/** Sample range covering the middle 80% of the constant-speed window, clear of the acceleration ramps. */
-export function analysisWindow(m: MotorMove, sampleRate: number, sampleCount: number): { start: number; end: number } {
+/**
+ * Sample range covering the middle 80% of the constant-speed window, clear of the acceleration
+ * ramps. `offsetSec` shifts the window later in the recording - used to select the RETURN leg of a
+ * round-trip capture (pass the outbound move's `moveDuration` as the offset), where the same
+ * constant-speed geometry repeats a second time after the outbound pass and its own ramps.
+ */
+export function analysisWindow(m: MotorMove, sampleRate: number, sampleCount: number, offsetSec = 0): { start: number; end: number } {
 	const w = constantSpeedWindow(m);
-	const start = Math.min(sampleCount - 1, Math.round((w.start + 0.1 * w.duration) * sampleRate));
-	const end = Math.min(sampleCount, Math.round((w.start + 0.9 * w.duration) * sampleRate));
+	const start = Math.min(sampleCount - 1, Math.round((offsetSec + w.start + 0.1 * w.duration) * sampleRate));
+	const end = Math.min(sampleCount, Math.round((offsetSec + w.start + 0.9 * w.duration) * sampleRate));
 	return { start, end };
 }
 

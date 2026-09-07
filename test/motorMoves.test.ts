@@ -134,6 +134,20 @@ describe("analysisWindow", () => {
 		expect(win.start).toBeGreaterThan(0);
 		expect(win.end).toBeGreaterThan(win.start);
 	});
+
+	it("an offset selects a later window, for the return leg of a round trip", () => {
+		const m = {
+			motor: "X", axes: ["X"], start: [0], end: [100], distance: 100,
+			feedrate: 600, acceleration: 1000, fullStepsPerMm: 5, stepFactor: 1,
+		};
+		const w = constantSpeedWindow(m);
+		const rate = 1000;
+		const sampleCount = Math.ceil((2 * w.moveDuration + 1) * rate);
+		const outbound = analysisWindow(m, rate, sampleCount, 0);
+		const returnLeg = analysisWindow(m, rate, sampleCount, w.moveDuration);
+		expect(returnLeg.start).toBeGreaterThan(outbound.start);
+		expect(returnLeg.end).toBeGreaterThan(outbound.end);
+	});
 });
 
 describe("runMotorPointCapture", () => {
@@ -152,5 +166,29 @@ describe("runMotorPointCapture", () => {
 		expect(calls[1]).toContain("M956 P0");
 		expect(calls[1]).toContain('F"rlab-motorx');
 		expect(calls[1]).toContain(`F${move.feedrate}`);
+	});
+
+	it("a round trip emits two G1s at the same feedrate and sizes a larger recording", async () => {
+		const singleCalls: Array<string> = [];
+		const roundTripCalls: Array<string> = [];
+		const singleIo: MachineIO = { sendCode: async (code) => { singleCalls.push(code); return "ok"; }, upload: async () => {}, download: async () => "" };
+		const roundTripIo: MachineIO = { sendCode: async (code) => { roundTripCalls.push(code); return "ok"; }, upload: async () => {}, download: async () => "" };
+
+		const option = deriveMotorOptions(coreXY).find((o) => o.label === "X+Y")!;
+		const move = buildMotorMove(option, coreXY, 100, 50);
+
+		await runMotorPointCapture(singleIo, { accelerometer: { id: "0", label: "MB" }, move, expectedSampleRate: 1344 });
+		await runMotorPointCapture(roundTripIo, { accelerometer: { id: "0", label: "MB" }, move, expectedSampleRate: 1344, roundTrip: true });
+
+		const armLine = roundTripCalls[1];
+		// Two G1s at the move feedrate (once going out, once coming back), not the single pass's one.
+		const g1Count = (armLine.match(/G1 /g) ?? []).length;
+		expect(g1Count).toBe(2);
+		expect((armLine.match(new RegExp(`F${move.feedrate}(?!\\d)`, "g")) ?? []).length).toBe(2);
+
+		// Larger S count than the single-pass recording, since it must cover both legs.
+		const singleSamples = Number(/S(\d+)/.exec(singleCalls[1])![1]);
+		const roundTripSamples = Number(/S(\d+)/.exec(armLine)![1]);
+		expect(roundTripSamples).toBeGreaterThan(singleSamples);
 	});
 });

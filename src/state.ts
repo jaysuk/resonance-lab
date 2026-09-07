@@ -19,6 +19,7 @@ import { computed, ref } from "vue";
 import type { OrientationSolution } from "./analysis/axesMap";
 import type { BeltComparison } from "./analysis/belts";
 import type { MotorFinding, MotorSweep } from "./analysis/motorHarmonics";
+import type { HarmonicTuningResult } from "./analysis/motorTuning";
 import type { CaptureAnalysis } from "./analysis/pipeline";
 import type { CombinedRecommendationResult } from "./analysis/recommend";
 import type { VibrationProfile } from "./analysis/vibration";
@@ -51,6 +52,24 @@ export interface MotorSessionResult {
 	overflows: number;
 }
 
+/** Result of the motor-quality-tuning task: the search outcome per harmonic, plus the G-code to persist it. */
+export interface MotorTuneResult {
+	motor: string;
+	/** Display label, e.g. "X+Y". */
+	label: string;
+	/** "M970.3" (phase stepping) or "M569.2" (sine table). */
+	command: string;
+	/** The `P` value used, e.g. "0" or "1.2". */
+	driverId: string;
+	/** Detected chip name (e.g. "TMC5160"), or null when detection didn't resolve. */
+	chip: string | null;
+	results: Array<HarmonicTuningResult>;
+	/** The config.g lines a user would add to persist this correction. */
+	codes: Array<string>;
+	/** False until the Keep button is pressed - Discard (or an abort) restores the prior values instead. */
+	kept: boolean;
+}
+
 /** Everything one tool's own measurement session holds. */
 interface ToolSession {
 	lastResult: SessionResult | null;
@@ -61,12 +80,13 @@ interface ToolSession {
 	beltResult: BeltComparison | null;
 	profileResult: VibrationProfile | null;
 	motorResult: MotorSessionResult | null;
+	motorTuneResult: MotorTuneResult | null;
 }
 
 function emptySession(): ToolSession {
 	return {
 		lastResult: null, multiResults: [], combinedRec: null, orientationResult: null,
-		beltResult: null, profileResult: null, motorResult: null,
+		beltResult: null, profileResult: null, motorResult: null, motorTuneResult: null,
 	};
 }
 
@@ -110,12 +130,13 @@ export const orientationResult = sessionField("orientationResult");
 export const beltResult = sessionField("beltResult");
 export const profileResult = sessionField("profileResult");
 export const motorResult = sessionField("motorResult");
+export const motorTuneResult = sessionField("motorTuneResult");
 
 export const measurementRunning = ref(false);
 
 // View selection lives here too, so returning to the plugin restores the same task + axes (and the
 // matching result), not the default Calibrate tab.
-export type CaptureMethod = "sweep" | "move" | "custom" | "belts" | "profile" | "excite" | "axescheck" | "motor";
+export type CaptureMethod = "sweep" | "move" | "custom" | "belts" | "profile" | "excite" | "axescheck" | "motor" | "motortune";
 export const method = ref<CaptureMethod>("sweep");
 export const selectedAxis = ref("X");
 export const selectedAxes = ref<Array<string>>(["X", "Y"]);

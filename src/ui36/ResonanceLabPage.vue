@@ -253,7 +253,7 @@
 						<v-select v-if="method === 'sweep'" v-model="selectedAxes" :items="axisItems" multiple chips deletable-chips
 								  dense outlined hide-details style="min-width: 170px"
 								  :label="$t('plugins.resonanceLab.controls.axes')" :disabled="running" />
-						<v-select v-else-if="method === 'motor'" v-model="selectedMotor" :items="motorItems" dense outlined
+						<v-select v-else-if="method === 'motor' || method === 'motortune'" v-model="selectedMotor" :items="motorItems" dense outlined
 								  hide-details style="min-width: 140px" :label="$t('plugins.resonanceLab.controls.motor')" :disabled="running" />
 						<v-select v-else-if="activeTask.usesAxis" v-model="selectedAxis" :items="axisItems" dense outlined
 								  hide-details style="max-width: 110px" :label="$t('plugins.resonanceLab.controls.axis')" :disabled="running" />
@@ -277,6 +277,8 @@
 						<v-text-field v-if="activeTask.params.includes('motorSpeedMax')" v-model.number="adv.motorSpeedMax" type="number" dense outlined hide-details label="Max (mm/s)" style="max-width: 132px" :disabled="running"><template #append><HelpTip text="Highest motor test speed, in mm/s — clamped so the full-step frequency stays below the accelerometer's Nyquist frequency." /></template></v-text-field>
 						<v-text-field v-if="activeTask.params.includes('motorSpeedStep')" v-model.number="adv.motorSpeedStep" type="number" dense outlined hide-details label="Step (mm/s)" style="max-width: 132px" :disabled="running"><template #append><HelpTip text="Speed increment between motor test runs, in mm/s." /></template></v-text-field>
 						<v-text-field v-if="activeTask.params.includes('motorLength')" v-model.number="adv.motorLength" type="number" dense outlined hide-details label="Length (mm)" style="max-width: 132px" :disabled="running"><template #append><HelpTip text="Length of the motor-isolating move, in mm. Longer moves reach constant speed at higher test speeds." /></template></v-text-field>
+						<v-text-field v-if="activeTask.params.includes('tuneSpeed')" v-model.number="adv.tuneSpeed" type="number" dense outlined hide-details label="Speed (mm/s)" style="max-width: 132px" :disabled="running"><template #append><HelpTip text="Constant test speed, in mm/s, used for every probe move during the search." /></template></v-text-field>
+						<v-text-field v-if="activeTask.params.includes('tuneLength')" v-model.number="adv.tuneLength" type="number" dense outlined hide-details label="Length (mm)" style="max-width: 132px" :disabled="running"><template #append><HelpTip text="Length of the motor-isolating move, in mm." /></template></v-text-field>
 						<v-spacer />
 						<v-btn color="primary" :loading="running" :disabled="!canMeasure" @click="onMeasureClick">
 							<v-icon left>mdi-play</v-icon>{{ $t("plugins.resonanceLab.controls.measure") }}
@@ -288,6 +290,15 @@
 						{{ $t(`plugins.resonanceLab.tasks.${method}.run`) }} · {{ $t("plugins.resonanceLab.durationLabel", { dur: durationEstimate }) }}
 						<template v-if="method === 'motor' && motorFreqHint"> · {{ motorFreqHint }} full-step</template>
 					</div>
+					<div v-if="method === 'motortune'" class="text-caption mt-1">
+						<template v-if="detectingChip">{{ $t("plugins.resonanceLab.motorTune.chipDetected", { chip: "…", drv: "" }) }}</template>
+						<template v-else-if="detectedChip && tuneChipUnsupported" class="error--text">
+							{{ $t("plugins.resonanceLab.motorTune.chipUnsupported", { chip: detectedChip.chip }) }}
+						</template>
+						<template v-else-if="detectedChip">{{ $t("plugins.resonanceLab.motorTune.chipDetected", { chip: detectedChip.chip, drv: selectedMotor }) }}</template>
+						<template v-else class="text--secondary">{{ $t("plugins.resonanceLab.motorTune.chipUnknown") }}</template>
+						<span v-if="!tunePhaseStepping && detectedChip && !tuneChipUnsupported" class="text--secondary"> · {{ $t("plugins.resonanceLab.motorTune.stepDirHint") }}</span>
+					</div>
 				</v-sheet>
 
 				<!-- Progress -->
@@ -298,6 +309,7 @@
 							{{ $t("plugins.resonanceLab.runningTask", { task: $t(`plugins.resonanceLab.tasks.${method}.title`) }) }}
 							<template v-if="method === 'belts' && beltPhase"> — {{ $t(`plugins.resonanceLab.belts.phase${beltPhase}`) }}</template>
 							<template v-if="method === 'belts' && beltEstablishingTiming"> ({{ $t('plugins.resonanceLab.belts.phaseTiming') }})</template>
+							<template v-if="method === 'motortune' && tuneStatus"> — {{ tuneStatus }}</template>
 						</span>
 						<v-btn small text :disabled="cancelRequested" @click="cancelRequested = true">
 							<v-icon v-if="!cancelRequested" left>mdi-stop-circle-outline</v-icon>
@@ -467,6 +479,37 @@
 					</v-alert>
 				</template>
 
+				<!-- Motor waveform tuning result -->
+				<template v-else-if="motorTuneResult && motorTuneVerdict">
+					<v-card outlined :color="motorTuneVerdict.color" class="mb-3 rlab-tonal">
+						<v-card-text class="d-flex align-center rlab-ga-3 py-3">
+							<v-icon large>{{ motorTuneVerdict.icon }}</v-icon>
+							<div>
+								<div class="text-subtitle-1 font-weight-medium">{{ motorTuneVerdict.headline }}</div>
+								<div class="text-body-2 text--secondary">
+									{{ motorTuneResult.motor }} · {{ motorTuneResult.chip ?? "?" }} · {{ motorTuneResult.command }} P{{ motorTuneResult.driverId }}
+									<template v-if="motorTuneResult.kept"> · {{ $t("plugins.resonanceLab.motorTune.keep") }}</template>
+								</div>
+							</div>
+						</v-card-text>
+					</v-card>
+					<v-alert v-for="row in motorTuneRows" :key="row.harmonic" :type="row.improved ? 'success' : 'info'" text dense class="mb-2">
+						{{ row.text }}
+					</v-alert>
+					<v-alert v-if="motorTuneResult.codes.length > 0" type="info" text dense class="mb-2">
+						{{ $t(tunePhaseStepping ? "plugins.resonanceLab.motorTune.resultCodesPhaseStepping" : "plugins.resonanceLab.motorTune.resultCodes") }}
+						<pre class="rlab-gcode-preview mt-1">{{ motorTuneResult.codes.join("\n") }}</pre>
+					</v-alert>
+					<div class="d-flex rlab-ga-2 mt-2">
+						<v-btn color="primary" @click="keepMotorTune">
+							<v-icon left>mdi-content-save-check-outline</v-icon>{{ $t("plugins.resonanceLab.motorTune.keep") }}
+						</v-btn>
+						<v-btn text @click="discardMotorTune">
+							<v-icon left>mdi-undo</v-icon>{{ $t("plugins.resonanceLab.motorTune.discard") }}
+						</v-btn>
+					</div>
+				</template>
+
 				<!-- Multi-axis calibration overlay -->
 				<template v-else-if="multiResults.length && multiChart">
 					<v-card v-if="combinedSummary" outlined color="primary" class="mb-2 rlab-tonal">
@@ -620,7 +663,7 @@ import { createHost } from "./host";
 import { useResonanceLab } from "../core/useResonanceLab";
 import { DEFAULT_PROGRAM_DIR } from "../capture/orchestrator";
 import {
-	beltResult, method, motorResult, multiResults, orientationResult, profileResult,
+	beltResult, method, motorResult, motorTuneResult, multiResults, orientationResult, profileResult,
 	selectedAxes, selectedAxis, selectedMotor,
 } from "../state";
 import { applyUpdateNow, applying as updateApplying, checking, pendingReload, updateState } from "../updateCheck";
@@ -680,6 +723,15 @@ const {
 	motorChart,
 	motorVerdict,
 	motorFindingRows,
+	tunePhaseStepping,
+	tuneChipUnsupported,
+	detectedChip,
+	detectingChip,
+	tuneStatus,
+	motorTuneRows,
+	motorTuneVerdict,
+	keepMotorTune,
+	discardMotorTune,
 	multiChart,
 	multiVerifyChart,
 	multiRows,

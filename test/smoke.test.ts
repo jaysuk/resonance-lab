@@ -7,6 +7,21 @@ import ResonanceLabPage from "../src/ui37/ResonanceLabPage.vue";
 import SummaryPanel from "../src/ui37/SummaryPanel.vue";
 import { lastResult, measurementRunning, method } from "../src/state";
 
+/** Non-core-kinematics model with a single tunable Z motor, for the motortune firmware gate tests. */
+function tuneModel(firmwareVersion: string) {
+	return loadObjectModel({
+		boards: [{ shortName: "MB6HC", firmwareVersion, canAddress: 0, accelerometer: { points: 0, runs: 0 } }],
+		move: {
+			kinematics: {},
+			axes: [{
+				letter: "Z", visible: true, homed: true, min: 0, max: 200,
+				stepsPerMm: 400, microstepping: { value: 16 }, phaseStep: true,
+				drivers: [{ board: 0, driver: 0 }], acceleration: 500, speed: 40,
+			}],
+		},
+	});
+}
+
 /** Synthetic 3-channel (X/Y/Z) accelerometer capture, ringing at f0 on every channel. */
 function accelCsv3(f0: number): string {
 	const fs = 1000;
@@ -145,6 +160,46 @@ describe("Resonance Lab smoke", () => {
 			expect((checkbox.element as HTMLInputElement).checked).toBe(true);
 		} finally {
 			lastResult.value = null;
+			wrapper.unmount();
+		}
+	});
+
+	// The motortune task writes to the driver in a search loop, so it must not appear at all below
+	// the minimum firmware version - not merely be disabled, since the command may not exist in the
+	// firmware below that version. The motor (analysis-only) task must stay visible regardless.
+	it("hides the motor waveform tuning task below the minimum firmware version, but keeps motor analysis", () => {
+		setConnected(true);
+		setModel(tuneModel("3.6.1"));
+		const wrapper = mountInDwc(ResonanceLabPage);
+		try {
+			expect(wrapper.text()).not.toContain("resonanceLab.tasks.motortune.title");
+			expect(wrapper.text()).toContain("resonanceLab.tasks.motor.title");
+		} finally {
+			wrapper.unmount();
+		}
+	});
+
+	it("shows the motor waveform tuning task at the minimum firmware version", () => {
+		setConnected(true);
+		setModel(tuneModel("3.7.0-rc.1"));
+		const wrapper = mountInDwc(ResonanceLabPage);
+		try {
+			expect(wrapper.text()).toContain("resonanceLab.tasks.motortune.title");
+		} finally {
+			wrapper.unmount();
+		}
+	});
+
+	// The STM32 port appends a parenthesised suffix to its version string (e.g. "(CAN0)") - the gate
+	// must strip it before parsing, or every STM32H7 board (the main phase-stepping platform) would
+	// fail closed and never see this task at all.
+	it("shows the motor waveform tuning task on the STM32 port's parenthesised version suffix", () => {
+		setConnected(true);
+		setModel(tuneModel("3.7.0-rc.1(CAN0)"));
+		const wrapper = mountInDwc(ResonanceLabPage);
+		try {
+			expect(wrapper.text()).toContain("resonanceLab.tasks.motortune.title");
+		} finally {
 			wrapper.unmount();
 		}
 	});

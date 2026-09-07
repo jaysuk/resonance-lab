@@ -20,8 +20,12 @@ import { buildReport, downloadReport } from "dwc-plugin-runtime/diagnostics";
 import { analyzeAxisBurst, detectVerticalAxis, solveOrientation } from "../analysis/axesMap";
 import { compareBelts } from "../analysis/belts";
 import {
-	analyzeMotorHarmonics, gradeOrders, type MotorHarmonics, type MotorLevel, summarizeMotorSweep, toDisplacementUm,
+	analyzeMotorHarmonics, combineAxes, gradeOrders, type MotorHarmonics, type MotorLevel, summarizeMotorSweep, toDisplacementUm,
 } from "../analysis/motorHarmonics";
+import {
+	defaultTuningSchedule, getMovesPerHarmonic, parsePhaseCorrections, tuneHarmonic,
+	type HarmonicTuningResult, type PhaseCorrection, type TuningMeasurement,
+} from "../analysis/motorTuning";
 import { analyseCapture, type CaptureAnalysis } from "../analysis/pipeline";
 import { findBestShaperCombined, type CombinedRecommendationResult } from "../analysis/recommend";
 import { SHAPER_DISPLAY_NAMES, type ShaperName } from "../analysis/shapers";
@@ -30,7 +34,7 @@ import { buildVibrationProfile } from "../analysis/vibration";
 import { cropCaptureToDuration, parseAccelCsv } from "../capture/csv";
 import {
 	analysisWindow, buildMotorMove, constantSpeedWindow, deriveMotorOptions, fullStepFrequency,
-	maxSpeedForRate, type MotorOption,
+	maxLength, maxSpeedForRate, type MotorOption,
 } from "../capture/motorMoves";
 import {
 	beltEstimatedDurationSec, DEFAULT_PROGRAM_DIR, downloadCapture, findAccelerometers, parseAccelRateFromReport,
@@ -43,9 +47,12 @@ import {
 	applyEditPlan, configPath, planOrientationSave, planShaperSave, restartAfterConfigEdit,
 	type DirectiveEditPlan, type ShaperScope,
 } from "../config/machineConfig";
+import { chipFromIoin, type DriverChip, IOIN_ADDRESSES, parseRegisterValue, supportsWaveformCorrection } from "../config/driverChip";
+import { firmwareAtLeast } from "../config/firmwareVersion";
 import {
-	activeTool, beltResult, combinedRec, lastResult, measurementRunning, method, motorResult, multiResults,
-	orientationResult, profileResult, selectedAxes, selectedAxis, selectedMotor, type CaptureMethod, type MultiAxisResult,
+	activeTool, beltResult, combinedRec, lastResult, measurementRunning, method, motorResult, motorTuneResult,
+	multiResults, orientationResult, profileResult, selectedAxes, selectedAxis, selectedMotor,
+	type CaptureMethod, type MultiAxisResult,
 } from "../state";
 // Only the pieces the logic itself drives. The rest of the update surface (updateState,
 // pendingReload, the apply/check actions) is module-level reactive state the templates import
@@ -243,6 +250,7 @@ export function useResonanceLab(host: HostAdapter) {
 		speedMin: 30, speedMax: 180, speedStep: 30,
 		customMoves: "",
 		motorSpeedMin: 20, motorSpeedMax: 120, motorSpeedStep: 25, motorLength: 100,
+		tuneSpeed: 0, tuneLength: 0, // 0 = "not yet defaulted" - see the tuneSpeed/tuneLength watcher below
 		/** Move to this Z (mm) before measuring; null = leave Z at whatever it currently is. */
 		zHeight: loadZHeight() as number | null,
 	});
@@ -268,11 +276,16 @@ export function useResonanceLab(host: HostAdapter) {
 		{ id: "profile", group: "goal", icon: "mdi-speedometer", usesAxis: true, params: ["speedMin", "speedMax", "speedStep"] },
 		{ id: "axescheck", group: "goal", icon: "mdi-axis-arrow", usesAxis: false, params: [] },
 		{ id: "motor", group: "goal", icon: "mdi-cog-outline", usesAxis: false, params: ["motorSpeedMin", "motorSpeedMax", "motorSpeedStep", "motorLength"] },
+		{ id: "motortune", group: "goal", icon: "mdi-tune-vertical", usesAxis: false, params: ["tuneSpeed", "tuneLength"] },
 		{ id: "excite", group: "diag", icon: "mdi-pulse", usesAxis: true, params: ["exciteFreq", "exciteSeconds"] },
 		{ id: "move", group: "diag", icon: "mdi-arrow-left-right", usesAxis: true, params: [] },
 		{ id: "custom", group: "diag", icon: "mdi-code-braces", usesAxis: true, params: ["customMoves"] },
 	];
-	const goalTasks = computed(() => TASKS.filter((td) => td.group === "goal"));
+	// The motortune task is gated on firmware version (R2/R3) - it must not appear at all below the
+	// minimum, not merely be disabled, since the machine may genuinely lack the M970.3/M569.2 waveform
+	// correction command entirely below that version.
+	const goalTasks = computed(() => TASKS.filter((td) =>
+		td.group === "goal" && (td.id !== "motortune" || motorTuneSupported.value)));
 	const diagTasks = computed(() => TASKS.filter((td) => td.group === "diag"));
 	const activeTask = computed(() => TASKS.find((td) => td.id === method.value) ?? TASKS[0]);
 	const taskAxisNote = computed(() => (activeTask.value.usesAxis ? "" : t(`tasks.${method.value}.axisNote`)));
@@ -287,6 +300,7 @@ export function useResonanceLab(host: HostAdapter) {
 		beltResult.value = null;
 		profileResult.value = null;
 		motorResult.value = null;
+		motorTuneResult.value = null;
 		orientationResult.value = null;
 		verifyResult.value = null;
 		multiResults.value = [];
@@ -325,6 +339,12 @@ export function useResonanceLab(host: HostAdapter) {
 					: 6;
 				break;
 			}
+			case "motortune": {
+				const motor = activeMotor.value;
+				const moveDuration = motor ? constantSpeedWindow(buildMotorMove(motor, host.model(), a.tuneLength, a.tuneSpeed)).moveDuration : 0;
+				secs = numTuneMoves.value * (2 * moveDuration + 2);
+				break;
+			}
 			default: secs = 6; break;
 		}
 		const rounded = Math.max(2, Math.round(secs));
@@ -343,7 +363,10 @@ export function useResonanceLab(host: HostAdapter) {
 	const canMeasure = computed(() => isConnected.value && !running.value && !loadingCapture.value
 		&& (selectedAccel.value !== null || accelItems.value.length > 0)
 		&& (method.value !== "sweep" || selectedAxes.value.length > 0)
-		&& (method.value !== "motor" || (activeMotor.value !== null && motorSpeedsUsable.value)));
+		&& (method.value !== "motor" || (activeMotor.value !== null && motorSpeedsUsable.value))
+		&& (method.value !== "motortune" || (
+			motorTuneSupported.value && tuneDriverId.value !== null && !tuneChipUnsupported.value && tuneSpeedUsable.value
+		)));
 
 	// ── Measurement ──────────────────────────────────────────────────────────────
 	/**
@@ -509,7 +532,7 @@ export function useResonanceLab(host: HostAdapter) {
 		if (method.value === "belts" || method.value === "axescheck") {
 			return ["X", "Y"];
 		}
-		if (method.value === "motor") {
+		if (method.value === "motor" || method.value === "motortune") {
 			return activeMotor.value?.axes ?? [];
 		}
 		return [selectedAxis.value]; // excite, move, profile
@@ -608,6 +631,180 @@ export function useResonanceLab(host: HostAdapter) {
 		}
 	}
 
+	// ── Motor waveform tuning (motortune task) ────────────────────────────────────
+	// Never hardcode a board list here (upstream's own list has already grown once and will grow
+	// again) - detection is: firmware gate (visibility) + axis.phaseStep (command choice) + IOIN chip
+	// read (informative) + a runtime query-form probe (the actual capability check, in measure()).
+	const MIN_TUNE_FIRMWARE = "3.7.0-rc.1";
+
+	interface TuneModelAxis {
+		letter?: string;
+		phaseStep?: boolean | null;
+		drivers?: Array<{ board?: number | null; driver?: number }>;
+	}
+
+	function tuneAxis(): TuneModelAxis | undefined {
+		const motor = activeMotor.value;
+		if (!motor) {
+			return undefined;
+		}
+		const axes = (host.model() as { move?: { axes?: Array<TuneModelAxis> } }).move?.axes ?? [];
+		return axes.find((a) => a.letter === motor.motor);
+	}
+
+	/** The board carrying a motor's first driver (mainboard when board is 0/absent). */
+	function driverBoardFirmware(motor: string): string | null {
+		const m = host.model() as {
+			boards?: Array<{ canAddress?: number | null; firmwareVersion?: string } | null>;
+			move?: { axes?: Array<TuneModelAxis> };
+		};
+		const axis = m.move?.axes?.find((a) => a.letter === motor);
+		const boardId = axis?.drivers?.[0]?.board ?? 0;
+		return m.boards?.find((b) => b && (b.canAddress ?? 0) === boardId)?.firmwareVersion ?? null;
+	}
+
+	// Gate: the mainboard AND the driver's own board (which may be a CAN expansion board) must both
+	// be new enough. Fails closed (R2) - missing/unparseable firmware means unsupported, never "assume
+	// it's fine". This is what keeps the task off the rail entirely below MIN_TUNE_FIRMWARE (see
+	// goalTasks above), not merely disabled - the command may not exist in the firmware at all.
+	const motorTuneSupported = computed(() => {
+		const main = (host.model() as { boards?: Array<{ firmwareVersion?: string } | null> }).boards?.[0]?.firmwareVersion ?? null;
+		if (!firmwareAtLeast(main, MIN_TUNE_FIRMWARE)) {
+			return false;
+		}
+		return motorOptions.value.some((o) => firmwareAtLeast(driverBoardFirmware(o.motor), MIN_TUNE_FIRMWARE));
+	});
+
+	// Command choice: phase stepping (free phase, harmonics 2 & 4) vs the driver's sine table
+	// (constrained to 0/180, harmonic 4 only - coil imbalance isn't representable there).
+	const tunePhaseStepping = computed(() => tuneAxis()?.phaseStep === true);
+	const tuneCommand = computed(() => (tunePhaseStepping.value ? "M970.3" : "M569.2"));
+	const tuneHarmonicList = computed(() => (tunePhaseStepping.value ? [2, 4] : [4]));
+	const tuneConstrain = computed(() => !tunePhaseStepping.value);
+	const numTuneMoves = computed(() => tuneHarmonicList.value.length * getMovesPerHarmonic(tuneConstrain.value));
+
+	/** DriverId -> the P parameter for M970.3/M569.2: "0" on the mainboard, "1.2" for board 1 driver 2. */
+	const tuneDriverId = computed<string | null>(() => {
+		const d = tuneAxis()?.drivers?.[0];
+		if (!d || typeof d.driver !== "number") {
+			return null;
+		}
+		return d.board ? `${d.board}.${d.driver}` : `${d.driver}`;
+	});
+
+	// Chip identification: informative only, never gating (the firmware check above already controls
+	// visibility) - the object model carries no chip-type field at all, so this is read directly off
+	// the driver via its IOIN register (see ../config/driverChip.ts, modelled on duet-tmc-tuner).
+	const detectedChip = ref<DriverChip | null>(null);
+	const detectingChip = ref(false);
+	const tuneChipUnsupported = computed(() => detectedChip.value !== null && !supportsWaveformCorrection(detectedChip.value.family));
+
+	async function readTuneReg(addr: number): Promise<number | null> {
+		return parseRegisterValue(await io.sendCode(`M569.2 P${tuneDriverId.value} R${addr}`));
+	}
+
+	// The FIRST M569.2 register read after a page load is often stale - RRF returns a cached/empty
+	// value before the driver is actually read. Retry until the VERSION byte resolves. Straight from
+	// duet-tmc-tuner's detectChip(); do not remove the retry.
+	async function detectChip(): Promise<DriverChip | null> {
+		if (!tuneDriverId.value) {
+			return null;
+		}
+		let match: DriverChip | null = null;
+		for (let attempt = 0; attempt < 4 && !match; attempt++) {
+			if (attempt > 0) {
+				await new Promise((resolve) => setTimeout(resolve, 200));
+			}
+			const uart = await readTuneReg(IOIN_ADDRESSES.uart);
+			const spi = await readTuneReg(IOIN_ADDRESSES.spi);
+			match = chipFromIoin({ uart, spi });
+		}
+		return match;
+	}
+
+	// Re-detect whenever the tuning task is opened or the selected motor changes - not on every page
+	// load regardless of task, which would spam the G-code console with register reads for a task the
+	// user isn't even looking at.
+	watch([method, activeMotor], async ([m, motor]) => {
+		if (m !== "motortune" || !motor) {
+			return;
+		}
+		detectedChip.value = null;
+		if (!motorTuneSupported.value) {
+			return;
+		}
+		detectingChip.value = true;
+		try {
+			detectedChip.value = await detectChip();
+		} finally {
+			detectingChip.value = false;
+		}
+	}, { immediate: true });
+
+	// Aim the default speed at a ~400Hz full-step frequency: strong signal, well under Nyquist on
+	// common accelerometers. Applied whenever the motor changes or the values haven't been set yet
+	// (0 = "not yet defaulted") - {immediate:true} is required, the same as the accelerometer
+	// auto-select chain, or the initial synchronous default is never observed.
+	watch(activeMotor, (motor) => {
+		if (!motor) {
+			return;
+		}
+		if (adv.value.tuneSpeed === 0) {
+			adv.value.tuneSpeed = Math.min(maxSpeedForRate(motor, 1000), Math.round((400 / motor.fullStepsPerMm / motor.stepFactor) * 10) / 10);
+		}
+		if (adv.value.tuneLength === 0) {
+			adv.value.tuneLength = Math.min(Math.round(maxLength(motor, host.model()) / 2), Math.floor(adv.value.tuneSpeed * 5));
+		}
+	}, { immediate: true });
+
+	/** The tuning move never reaches its feedrate (a triangular profile) - nothing to analyse. */
+	const tuneSpeedUsable = computed(() => {
+		const motor = activeMotor.value;
+		if (!motor || adv.value.tuneSpeed <= 0 || adv.value.tuneLength <= 0) {
+			return false;
+		}
+		return constantSpeedWindow(buildMotorMove(motor, host.model(), adv.value.tuneLength, adv.value.tuneSpeed)).duration > 0;
+	});
+
+	/** Live "measuring harmonic N, move M/T" status text while a tuning run is in progress. */
+	const tuneStatus = ref("");
+	/** Snapshot of the driver's corrections before this run started (from the probe reply) - R1: what
+	 *  cancel/error/Discard restore to. */
+	const previousCorrections = ref<Array<PhaseCorrection>>([]);
+
+	/** Restore the driver to whatever it held before the run started. Best-effort per harmonic: one
+	 *  failed write must not stop the rest from being restored, and must not mask the original error. */
+	async function restorePreviousCorrections(): Promise<void> {
+		const cmd = tuneCommand.value, drv = tuneDriverId.value;
+		if (!drv) {
+			return;
+		}
+		for (const harmonic of tuneHarmonicList.value) {
+			const previous = previousCorrections.value.find((c) => c.harmonic === harmonic);
+			try {
+				await io.sendCode(`${cmd} P${drv} S${harmonic} J${(previous?.magnitude ?? 0).toFixed(3)} O${(previous?.phase ?? 0).toFixed(1)}`);
+			} catch {
+				// best-effort - surfacing this would obscure whatever error caused the abort in the first place
+			}
+		}
+	}
+
+	/** Leave the just-tuned correction live (it already is - Keep only updates the record). */
+	function keepMotorTune(): void {
+		if (motorTuneResult.value) {
+			motorTuneResult.value = { ...motorTuneResult.value, kept: true };
+		}
+	}
+
+	/** Revert to the pre-tuning correction and record that it was discarded. */
+	async function discardMotorTune(): Promise<void> {
+		await restorePreviousCorrections();
+		if (motorTuneResult.value) {
+			motorTuneResult.value = { ...motorTuneResult.value, kept: false };
+		}
+		host.notify("info", t("motorTune.reverted"), "");
+	}
+
 	// Custom G-code (the "custom" method) runs whatever the user typed verbatim, unlike every other
 	// task's fixed, reviewed move profile - so it gets a review step first. Skippable per-session (not
 	// persisted) once the user has seen it, so a repeated re-run of the same profile isn't nagged.
@@ -639,6 +836,7 @@ export function useResonanceLab(host: HostAdapter) {
 		beltResult.value = null;
 		profileResult.value = null;
 		motorResult.value = null;
+		motorTuneResult.value = null;
 		orientationResult.value = null;
 		verifyResult.value = null;
 		multiVerifyResult.value = null;
@@ -724,6 +922,86 @@ export function useResonanceLab(host: HostAdapter) {
 					const sweep = summarizeMotorSweep(results);
 					motorResult.value = { motor: motor.motor, label: motor.label, sweep, findings: gradeOrders(sweep), speeds, overflows };
 				}
+			} else if (method.value === "motortune") {
+				const motor = activeMotor.value;
+				const cmd = tuneCommand.value;
+				const drv = tuneDriverId.value;
+				if (!motor || !drv) {
+					error.value = t("motorTune.unsupported");
+					return;
+				}
+
+				// PROBE + SNAPSHOT (R1) - before any write. The same reply that confirms the driver actually
+				// accepts this command is also the record of what to restore on cancel/error/Discard.
+				const probeReply = await io.sendCode(`${cmd} P${drv}`);
+				if (/^Error/im.test(probeReply) || !/waveform correction/i.test(probeReply)) {
+					error.value = t("motorTune.unsupported");
+					return;
+				}
+				previousCorrections.value = parsePhaseCorrections(probeReply);
+
+				const m = buildMotorMove(motor, host.model(), adv.value.tuneLength, adv.value.tuneSpeed);
+				let moveCount = 0;
+				const results: Array<HarmonicTuningResult> = [];
+
+				async function setCorrection(harmonic: number, magnitude: number, phase: number): Promise<void> {
+					await io.sendCode(`${cmd} P${drv} S${harmonic} J${magnitude.toFixed(3)} O${phase.toFixed(1)}`);
+				}
+
+				// Apply a candidate, record a round trip (both directions matter - a rotor-fixed error
+				// component shifts by the load angle, flipping sign with direction), analyse each leg
+				// separately and average. The recording is deleted immediately - a full run is 10-20 of
+				// these and they must not accumulate in 0:/sys/accelerometer/.
+				async function measureOnce(harmonic: number, magnitude: number, phase: number): Promise<TuningMeasurement> {
+					await setCorrection(harmonic, magnitude, phase);
+					tuneStatus.value = t("motorTune.status", {
+						h: harmonic, mag: magnitude.toFixed(2), phase: phase.toFixed(1), n: ++moveCount, total: numTuneMoves.value,
+					});
+
+					const run = await raceCancellable(runMotorPointCapture(io, {
+						accelerometer: accel, move: m, expectedSampleRate: sampleRate, roundTrip: true,
+					}));
+					const cap = parseAccelCsv(await raceCancellable(downloadCapture(io, run)));
+					if (io.delete) {
+						try { await io.delete(run.csvPath); } catch { /* best-effort - must not abort the run */ }
+					}
+
+					const window = constantSpeedWindow(m);
+					const sampleCount = cap.channels[0]?.length ?? 0;
+					const amplitudes = [0, window.moveDuration].map((offset) => {
+						const win = analysisWindow(m, cap.samplingRate, sampleCount, offset);
+						const slice = cap.channels.map((ch) => ch.slice(win.start, win.end));
+						const analysis = analyzeMotorHarmonics(slice, cap.samplingRate, fullStepFrequency(m), 1);
+						const orderIndex = analysis.orders.indexOf(harmonic / 4);
+						return orderIndex >= 0 ? combineAxes(analysis)[orderIndex] : 0;
+					}) as [number, number];
+
+					return { harmonic, magnitude, phase, amplitude: (amplitudes[0] + amplitudes[1]) / 2, amplitudes };
+				}
+
+				try {
+					await withShaperDisabled(async () => {
+						for (const harmonic of tuneHarmonicList.value) {
+							const result = await tuneHarmonic(harmonic, (mag, phase) => measureOnce(harmonic, mag, phase), tuneConstrain.value, defaultTuningSchedule);
+							results.push(result);
+							// Leave this harmonic at its winning value before starting the next one.
+							const won = result.best.amplitude < result.baseline;
+							await setCorrection(harmonic, won ? result.best.magnitude : 0, won ? result.best.phase : 0);
+						}
+					});
+				} catch (e) {
+					await restorePreviousCorrections(); // cancel / error / disconnect (R1)
+					throw e;
+				}
+
+				lastResult.value = null;
+				const codes = results
+					.filter((r) => r.best.amplitude < r.baseline)
+					.map((r) => `${cmd} P${drv} S${r.harmonic} J${r.best.magnitude.toFixed(2)} O${r.best.phase.toFixed(1)}`);
+				motorTuneResult.value = {
+					motor: motor.motor, label: motor.label, command: cmd, driverId: drv,
+					chip: detectedChip.value?.chip ?? null, results, codes, kept: false,
+				};
 			} else if (method.value === "belts") {
 				// Tension matching only needs the band the belt resonances live in — a light 15–95 Hz
 				// sweep at 2 Hz/s (~40s per belt), not the full calibration band. Defaults are belt-specific.
@@ -1082,6 +1360,38 @@ export function useResonanceLab(host: HostAdapter) {
 		}
 		const worst = r.findings.reduce((w, f) => (MOTOR_LEVEL_RANK[f.level] > MOTOR_LEVEL_RANK[w.level] ? f : w));
 		return { color: motorLevelColor(worst.level), icon: motorLevelIcon(worst.level), headline: motorFindingText(worst, r.motor), detail: "" };
+	});
+
+	// ── Motor waveform tuning result ──────────────────────────────────────────────
+	interface MotorTuneRow { harmonic: number; text: string; improved: boolean }
+
+	const motorTuneRows = computed<Array<MotorTuneRow>>(() => {
+		const r = motorTuneResult.value;
+		if (!r) {
+			return [];
+		}
+		return r.results.map((res) => {
+			const improved = res.best.amplitude < res.baseline;
+			if (!improved) {
+				return { harmonic: res.harmonic, improved, text: t("motorTune.noImprovement", { h: res.harmonic }) };
+			}
+			const pct = res.baseline > 0 ? Math.round((1 - res.best.amplitude / res.baseline) * 100) : 0;
+			return {
+				harmonic: res.harmonic, improved,
+				text: t("motorTune.improved", { h: res.harmonic, before: res.baseline.toFixed(4), after: res.best.amplitude.toFixed(4), pct }),
+			};
+		});
+	});
+
+	const motorTuneVerdict = computed(() => {
+		const r = motorTuneResult.value;
+		if (!r) {
+			return null;
+		}
+		const improvedCount = motorTuneRows.value.filter((row) => row.improved).length;
+		return improvedCount > 0
+			? { color: "success" as const, icon: "mdi-check-decagram", headline: t("motorTune.summary", { improved: improvedCount, total: r.results.length }) }
+			: { color: "info" as const, icon: "mdi-information-outline", headline: t("motorTune.summaryNone") };
 	});
 
 	// ── Multi-axis calibration overlay ───────────────────────────────────────────
@@ -1714,6 +2024,15 @@ export function useResonanceLab(host: HostAdapter) {
 		motorChart,
 		motorVerdict,
 		motorFindingRows,
+		tunePhaseStepping,
+		tuneChipUnsupported,
+		detectedChip,
+		detectingChip,
+		tuneStatus,
+		motorTuneRows,
+		motorTuneVerdict,
+		keepMotorTune,
+		discardMotorTune,
 		multiChart,
 		multiVerifyChart,
 		multiRows,

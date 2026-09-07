@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { watchEffect } from "vue";
 
-import { activeTool, lastResult, motorResult, type MotorSessionResult, sessions, type SessionResult } from "../src/state";
+import {
+	activeTool, lastResult, motorResult, type MotorSessionResult, motorTuneResult, type MotorTuneResult,
+	sessions, type SessionResult,
+} from "../src/state";
 
 function fakeResult(axis: string): SessionResult {
 	return { axis, when: new Date(), source: "test", analysis: {} as SessionResult["analysis"] };
@@ -12,6 +15,13 @@ function fakeMotorResult(motor: string): MotorSessionResult {
 		motor, label: motor, speeds: [50], overflows: 0,
 		sweep: { orders: [1], frequencies: [100], amplitudes: [[0.1]], ratios: [[null]] },
 		findings: [],
+	};
+}
+
+function fakeMotorTuneResult(motor: string): MotorTuneResult {
+	return {
+		motor, label: motor, command: "M970.3", driverId: "0", chip: "TMC5160",
+		results: [], codes: [], kept: false,
 	};
 }
 
@@ -75,5 +85,17 @@ describe("per-tool session state", () => {
 		expect(motorResult.value?.motor).toBe("X");
 		activeTool.value = 1;
 		expect(motorResult.value?.motor).toBe("Y");
+	});
+
+	it("keeps each tool's motor tune result separate", () => {
+		activeTool.value = 0;
+		motorTuneResult.value = fakeMotorTuneResult("X");
+		activeTool.value = 1;
+		motorTuneResult.value = fakeMotorTuneResult("Y");
+
+		activeTool.value = 0;
+		expect(motorTuneResult.value?.motor).toBe("X");
+		activeTool.value = 1;
+		expect(motorTuneResult.value?.motor).toBe("Y");
 	});
 });
