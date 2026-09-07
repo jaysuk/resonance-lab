@@ -3,7 +3,7 @@ setlocal
 
 :: Path to a local checkout of the Vue 2.7 DuetWebControl 3.6 source tree.
 :: (The 3.7+ build lives in build.bat and uses a different checkout entirely.)
-set DWC36_DIR=c:\Users\live\Documents\Input Shaping\DuetWebControl-3.6-dev
+set DWC36_DIR=c:\Users\live\Documents\Github\DuetWebControl-3.6-dev
 set PLUGIN_ID=ResonanceLab
 set STAGE_DIR=%TEMP%\resonance-lab-dwc36
 
