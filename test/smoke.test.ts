@@ -5,7 +5,7 @@ import { analyseCapture } from "../src/analysis/pipeline";
 import { parseAccelCsv } from "../src/capture/csv";
 import ResonanceLabPage from "../src/ui37/ResonanceLabPage.vue";
 import SummaryPanel from "../src/ui37/SummaryPanel.vue";
-import { lastResult, measurementRunning, method } from "../src/state";
+import { lastResult, measurementRunning, method, motorTuneResult, selectedMotor } from "../src/state";
 
 /** Non-core-kinematics model with a single tunable Z motor, for the motortune firmware gate tests. */
 function tuneModel(firmwareVersion: string) {
@@ -200,6 +200,57 @@ describe("Resonance Lab smoke", () => {
 		try {
 			expect(wrapper.text()).toContain("resonanceLab.tasks.motortune.title");
 		} finally {
+			wrapper.unmount();
+		}
+	});
+
+	// R1 regression: the motor picker is re-enabled the moment a run finishes, while the result card
+	// and its Discard button are still on screen. Discard must restore the driver that was actually
+	// tuned (recorded on the result), NOT whatever motor happens to be selected now - otherwise it
+	// writes one driver's saved values into a different driver that was never tuned.
+	it("discard restores the driver recorded on the result, not the currently-selected motor", async () => {
+		setConnected(true);
+		setModel(loadObjectModel({
+			boards: [{ shortName: "MB6HC", firmwareVersion: "3.7.0-rc.1", canAddress: 0, accelerometer: { points: 0, runs: 0 } }],
+			move: {
+				kinematics: { forwardMatrix: [[0.5, 0.5], [0.5, -0.5]], inverseMatrix: [[1, 1], [1, -1]] },
+				axes: [
+					{ letter: "X", visible: true, homed: true, min: 0, max: 300, stepsPerMm: 80, microstepping: { value: 16 }, phaseStep: true, drivers: [{ board: 0, driver: 0 }], acceleration: 4000, speed: 500 },
+					{ letter: "Y", visible: true, homed: true, min: 0, max: 300, stepsPerMm: 80, microstepping: { value: 16 }, phaseStep: true, drivers: [{ board: 0, driver: 1 }], acceleration: 4000, speed: 500 },
+				],
+			},
+		}));
+		method.value = "motortune";
+		// A finished run against driver 0 ("X"), as measure() would have left it.
+		motorTuneResult.value = {
+			motor: "X", label: "X+Y", command: "M970.3", driverId: "0", chip: "TMC5160",
+			results: [{ harmonic: 4, baseline: 0.5, best: { harmonic: 4, magnitude: 1.2, phase: 30, amplitude: 0.2, amplitudes: [0.2, 0.2] } }],
+			codes: ["M970.3 P0 S4 J1.20 O30.0"], kept: false,
+		};
+		// The user now picks the OTHER motor before pressing Discard.
+		selectedMotor.value = "Y";
+
+		const wrapper = mountInDwc(ResonanceLabPage);
+		try {
+			const before = sentCodes().length;
+			const discardBtn = wrapper.findAll("button").find((b) => b.text().includes("resonanceLab.motorTune.discard"));
+			expect(discardBtn).toBeTruthy();
+			await discardBtn!.trigger("click");
+			await new Promise((r) => setTimeout(r, 20));
+
+			// Correction WRITES only ("<cmd> P<drv> S<h> J<mag> O<phase>") - not the chip-detection
+			// register reads ("M569.2 P<drv> R<addr>"), which legitimately follow the selected motor.
+			const restoreCodes = sentCodes().slice(before).filter((c) => /\sS\d+\s+J/.test(c));
+			expect(restoreCodes.length).toBeGreaterThan(0);
+			// Every restore write must target driver 0 (the one tuned), never driver 1 (now selected).
+			for (const code of restoreCodes) {
+				expect(code).toContain("P0 ");
+				expect(code).not.toContain("P1 ");
+			}
+		} finally {
+			motorTuneResult.value = null;
+			selectedMotor.value = "";
+			method.value = "sweep";
 			wrapper.unmount();
 		}
 	});

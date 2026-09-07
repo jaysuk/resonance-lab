@@ -94,6 +94,7 @@
 		}
 	},
 	"motorTune": {
+		"chipDetecting": "Identifying the driver chip…",
 		"chipDetected": "Detected {chip} on driver {drv}",
 		"chipUnknown": "Could not identify the chip — relying on the driver's own response",
 		"chipUnsupported": "{chip} does not support waveform correction — a TMC5160 or TMC2240 is required",
@@ -108,7 +109,8 @@
 		"keep": "Keep",
 		"discard": "Discard",
 		"reverted": "Reverted to the previous correction.",
-		"unsupported": "This driver did not accept a waveform correction — check it supports a TMC5160/TMC2240 sine table and try again."
+		"unsupported": "This driver did not accept a waveform correction — check it supports a TMC5160/TMC2240 sine table and try again.",
+		"speedTooHigh": "At this speed the motor's full-step frequency is {hz} Hz, too high for the accelerometer to measure — reduce the speed to {speed} mm/s or below."
 	},
 	"multi": {
 		"headline": "Per-axis resonance",

@@ -772,14 +772,17 @@ export function useResonanceLab(host: HostAdapter) {
 	 *  cancel/error/Discard restore to. */
 	const previousCorrections = ref<Array<PhaseCorrection>>([]);
 
-	/** Restore the driver to whatever it held before the run started. Best-effort per harmonic: one
-	 *  failed write must not stop the rest from being restored, and must not mask the original error. */
-	async function restorePreviousCorrections(): Promise<void> {
-		const cmd = tuneCommand.value, drv = tuneDriverId.value;
-		if (!drv) {
-			return;
-		}
-		for (const harmonic of tuneHarmonicList.value) {
+	/**
+	 * Restore a driver to whatever it held before a tuning run started. R1, so the identity of the
+	 * driver being restored is passed in EXPLICITLY rather than re-read from `tuneCommand`/
+	 * `tuneDriverId`/`tuneHarmonicList`: those are computeds over `selectedMotor`, and the motor
+	 * picker is re-enabled the moment a run finishes while the result card (and its Discard button)
+	 * is still on screen. Reading them live would let "Discard" write one driver's saved values into
+	 * a different driver that was never tuned - the exact opposite of what Discard promises.
+	 * Best-effort per harmonic: one failed write must not stop the rest, or mask the original error.
+	 */
+	async function restoreCorrections(cmd: string, drv: string, harmonics: Array<number>): Promise<void> {
+		for (const harmonic of harmonics) {
 			const previous = previousCorrections.value.find((c) => c.harmonic === harmonic);
 			try {
 				await io.sendCode(`${cmd} P${drv} S${harmonic} J${(previous?.magnitude ?? 0).toFixed(3)} O${(previous?.phase ?? 0).toFixed(1)}`);
@@ -796,12 +799,14 @@ export function useResonanceLab(host: HostAdapter) {
 		}
 	}
 
-	/** Revert to the pre-tuning correction and record that it was discarded. */
+	/** Revert to the pre-tuning correction, targeting the driver the result itself records. */
 	async function discardMotorTune(): Promise<void> {
-		await restorePreviousCorrections();
-		if (motorTuneResult.value) {
-			motorTuneResult.value = { ...motorTuneResult.value, kept: false };
+		const r = motorTuneResult.value;
+		if (!r) {
+			return;
 		}
+		await restoreCorrections(r.command, r.driverId, r.results.map((res) => res.harmonic));
+		motorTuneResult.value = { ...r, kept: false };
 		host.notify("info", t("motorTune.reverted"), "");
 	}
 
@@ -941,6 +946,23 @@ export function useResonanceLab(host: HostAdapter) {
 				previousCorrections.value = parsePhaseCorrections(probeReply);
 
 				const m = buildMotorMove(motor, host.model(), adv.value.tuneLength, adv.value.tuneSpeed);
+
+				// Fail fast, before any write. analyzeMotorHarmonics throws once the full-step frequency
+				// (plus its ±5% search margin) reaches Nyquist; only the DEFAULT speed is clamped, and only
+				// against a nominal rate, so a hand-typed speed can exceed the real one. Without this the
+				// run would do several moves and then abort mid-search with a far less obvious error.
+				const fullStepHz = fullStepFrequency(m);
+				if (fullStepHz * 1.05 >= sampleRate / 2) {
+					error.value = t("motorTune.speedTooHigh", {
+						hz: Math.round(fullStepHz),
+						speed: Math.floor(maxSpeedForRate(motor, sampleRate) * 10) / 10,
+					});
+					return;
+				}
+
+				// Snapshot the harmonic list alongside cmd/drv: everything the restore path needs must be
+				// fixed at run start, not re-read from live computeds afterwards (see restoreCorrections).
+				const harmonics = [...tuneHarmonicList.value];
 				let moveCount = 0;
 				const results: Array<HarmonicTuningResult> = [];
 
@@ -981,7 +1003,7 @@ export function useResonanceLab(host: HostAdapter) {
 
 				try {
 					await withShaperDisabled(async () => {
-						for (const harmonic of tuneHarmonicList.value) {
+						for (const harmonic of harmonics) {
 							const result = await tuneHarmonic(harmonic, (mag, phase) => measureOnce(harmonic, mag, phase), tuneConstrain.value, defaultTuningSchedule);
 							results.push(result);
 							// Leave this harmonic at its winning value before starting the next one.
@@ -990,7 +1012,7 @@ export function useResonanceLab(host: HostAdapter) {
 						}
 					});
 				} catch (e) {
-					await restorePreviousCorrections(); // cancel / error / disconnect (R1)
+					await restoreCorrections(cmd, drv, harmonics); // cancel / error / disconnect (R1)
 					throw e;
 				}
 

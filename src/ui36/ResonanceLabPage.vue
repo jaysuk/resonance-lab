@@ -291,12 +291,12 @@
 						<template v-if="method === 'motor' && motorFreqHint"> · {{ motorFreqHint }} full-step</template>
 					</div>
 					<div v-if="method === 'motortune'" class="text-caption mt-1">
-						<template v-if="detectingChip">{{ $t("plugins.resonanceLab.motorTune.chipDetected", { chip: "…", drv: "" }) }}</template>
-						<template v-else-if="detectedChip && tuneChipUnsupported" class="error--text">
+						<span v-if="detectingChip" class="text--secondary">{{ $t("plugins.resonanceLab.motorTune.chipDetecting") }}</span>
+						<span v-else-if="detectedChip && tuneChipUnsupported" class="error--text">
 							{{ $t("plugins.resonanceLab.motorTune.chipUnsupported", { chip: detectedChip.chip }) }}
-						</template>
-						<template v-else-if="detectedChip">{{ $t("plugins.resonanceLab.motorTune.chipDetected", { chip: detectedChip.chip, drv: selectedMotor }) }}</template>
-						<template v-else class="text--secondary">{{ $t("plugins.resonanceLab.motorTune.chipUnknown") }}</template>
+						</span>
+						<span v-else-if="detectedChip">{{ $t("plugins.resonanceLab.motorTune.chipDetected", { chip: detectedChip.chip, drv: selectedMotor }) }}</span>
+						<span v-else class="text--secondary">{{ $t("plugins.resonanceLab.motorTune.chipUnknown") }}</span>
 						<span v-if="!tunePhaseStepping && detectedChip && !tuneChipUnsupported" class="text--secondary"> · {{ $t("plugins.resonanceLab.motorTune.stepDirHint") }}</span>
 					</div>
 				</v-sheet>
