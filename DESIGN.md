@@ -33,6 +33,12 @@ ecosystems or their tools are referenced in code, comments, or documentation.
 6. **Accelerometer orientation check** — one sharp move per horizontal axis with `M955` orientation
    neutralised to identity for the test, comparing which sensor channel carried each machine axis'
    motion to suggest the correct `M955 I` parameter.
+7. **Motor quality** — a motor-isolating move (on core kinematics, the column of the kinematics
+   forward matrix belonging to one motor; on other kinematics, Z alone) run at a range of constant
+   speeds, measuring vibration at multiples of the motor's own full-step frequency. This measures the
+   motor and driver themselves rather than the machine's structural response — see `motorHarmonics.ts`
+   below. Analysis-only: it emits no `M970.3`/`M569.2` driver-correction G-code and needs no board or
+   driver capability beyond `M955`/`M956`.
 
 ## Analysis core (`src/analysis/`, pure TS, no Vue, fully unit-tested)
 
@@ -70,17 +76,29 @@ ecosystems or their tools are referenced in code, comments, or documentation.
   check (suggests the `M955 I` parameter).
 - `stft.ts` — short-time Fourier transform for the spectrogram view (separates true resonances,
   which light up as horizontal lines when the sweep crosses them, from excitation-following noise).
+- `motorHarmonics.ts` — motor-quality analysis: refines the true full-step frequency around the
+  nominal value (coarse FFT-bin search, then a fine phasor-rotation DFT scan), evaluates amplitudes at
+  quarter-orders of it (a current-waveform error repeats once per electrical cycle, i.e. four full
+  steps, so integer orders alone would miss it), converts to displacement in µm (`a / (2πf)²` —
+  displacement, unlike acceleration, is speed-independent, so it's what can carry a fixed threshold),
+  and clusters a speed sweep's harmonics by *absolute* frequency rather than by order (the machine's
+  mechanical response depends only on absolute frequency, so this cancels the machine out of the
+  comparison and leaves the motor's own behaviour). Orders map to causes the same way the stock DWC
+  Input Shaping plugin's motor tuning tab does: 1× = detent torque/step ripple, 0.5× = coil current
+  imbalance, 0.25×/0.75× = distorted current waveform.
 
 Capture I/O lives in `src/capture/`: `csv.ts` (RRF accelerometer CSV parser, incl. overflow flags,
 and `cropCaptureToDuration` for oversized/self-timed recordings), `sweep.ts` (swept-excitation
-G-code generator with machine-limit guards), and `orchestrator.ts` (turns a measurement request into
-the `M955`/`M956`/G-code sequence via an injected `MachineIO`, so every sequence is unit-testable
-without a printer). Generated program files (the `.g` macros that drive the test motion) are
-uploaded to a configurable folder (`DEFAULT_PROGRAM_DIR` = `0:/sys/resonanceLab`, overridable via
-`programDir` on the capture options and the page's Settings dialog) rather than bare `0:/sys` -
-best-effort deleted right after each capture completes. The captured CSV itself is NOT relocatable:
-RRF's M956 `F` filename is hardcoded to combine with `0:/sys/accelerometer/` regardless of what a
-plugin passes (verified against `ConfigureAccelerometer` in the firmware source).
+G-code generator with machine-limit guards), `motorMoves.ts` (derives a Cartesian direction that
+drives exactly one motor at a constant step rate from the kinematics forward matrix, plus the
+trapezoidal-move math for its constant-speed window), and `orchestrator.ts` (turns a measurement
+request into the `M955`/`M956`/G-code sequence via an injected `MachineIO`, so every sequence is
+unit-testable without a printer). Generated program files (the `.g` macros that drive the test
+motion) are uploaded to a configurable folder (`DEFAULT_PROGRAM_DIR` = `0:/sys/resonanceLab`,
+overridable via `programDir` on the capture options and the page's Settings dialog) rather than bare
+`0:/sys` - best-effort deleted right after each capture completes. The captured CSV itself is NOT
+relocatable: RRF's M956 `F` filename is hardcoded to combine with `0:/sys/accelerometer/` regardless
+of what a plugin passes (verified against `ConfigureAccelerometer` in the firmware source).
 
 ## Belt recording sizing
 

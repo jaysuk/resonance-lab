@@ -51,14 +51,34 @@ first if only the 3.6 build breaks after adding a new shared module.
   subpath imports (`dwc-plugin-runtime/diagnostics` etc.), never the barrel, which re-exports Vue 3
   components and would break the Vue 2 build.
 - **Single lab page** (`src/ui37/ResonanceLabPage.vue`, `src/ui36/ResonanceLabPage.vue`) — a left
-  task rail (7 tasks, grouped into 4 "goals" + a "Diagnostics" drawer of 3) drives a `method` ref;
+  task rail (8 tasks, grouped into 5 "goals" + a "Diagnostics" drawer of 3) drives a `method` ref;
   the right panel renders only that task's own params (a `TASKS` array holds each task's
   icon/`usesAxis`/`params`) plus a live `durationEstimate` and a result view specific to that task's
   output shape.
 - **Tasks**: `sweep` (shaper calibration, can run several axes at once → combined recommendation),
   `belts` (CoreXY tension comparison), `profile` (speed-sweep vibration), `axescheck` (accelerometer
-  orientation → `M955 I`), `excite` (fixed-frequency + spectrogram), `move` (quick native capture),
-  `custom` (user-supplied G-code).
+  orientation → `M955 I`), `motor` (motor-quality harmonic analysis — see below), `excite`
+  (fixed-frequency + spectrogram), `move` (quick native capture), `custom` (user-supplied G-code).
+- **`motor` task** (`src/analysis/motorHarmonics.ts`, `src/capture/motorMoves.ts`) — measures the
+  motor and driver themselves rather than the machine's structural response, unlike every other task.
+  Runs a motor-isolating move (on core kinematics, the column of `move.kinematics.forwardMatrix`
+  belonging to one motor — `inverseMatrix * forwardMatrix` is the identity, so that column is exactly
+  the Cartesian direction that drives only that motor; on other kinematics, Z alone) at a range of
+  constant speeds, and evaluates vibration at quarter-multiples of the motor's full-step frequency (a
+  current-waveform error repeats once per electrical cycle, i.e. four full steps): 1× = detent
+  torque/step ripple, 0.5× = coil current imbalance, 0.25×/0.75× = distorted current waveform. Reports
+  displacement in µm (`a / (2πf)²`), not acceleration, since displacement alone is speed-independent
+  and can carry a fixed threshold (<0.5 µm low, <2 µm moderate, else high). A speed sweep is clustered
+  by *absolute* frequency across the recordings (not by order), because the machine's mechanical
+  response depends only on absolute frequency — this cancels the machine out and isolates the motor.
+  **Analysis only**: emits no `M970.3`/`M569.2` driver-correction G-code and needs no board/driver
+  capability beyond `M955`/`M956` — unlike the stock DWC Input Shaping plugin's motor-tuning tab, which
+  is gated to MB6HC-class boards because *writing* a correction needs phase stepping; this task's
+  *measurement* half needs nothing of the kind, so it isn't gated at all. Test speed is capped by
+  `maxSpeedForRate` so the full-step frequency (with its ±5% search margin) stays below the
+  accelerometer's Nyquist frequency; a motor whose axis doesn't report `microstepping.value` is
+  omitted from the motor picker entirely rather than assuming 16, since a wrong assumed microstepping
+  would produce a confident analysis at the wrong frequency.
 - **Analysis core** (`src/analysis/`, pure TS, fully unit-tested, zero Vue/store deps): `fft.ts`,
   `spectrum.ts` (Welch PSD), `shapers.ts` (RRF's MZV/ZVD/ZVDD/ZVDDD/EI2/EI3 per `AxisShaper.cpp`),
   `recommend.ts` (the tuning engine — `findBestShaper` single-axis, `findBestShaperCombined`

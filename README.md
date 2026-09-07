@@ -10,7 +10,9 @@ download the ZIP and install it via **Settings → General → Plugins → Insta
 
 - **Measure** — run controlled excitation moves and capture accelerometer samples (`M955`/`M956`)
   per axis / belt, optionally at a specific Z height.
-- **Analyse** — compute power spectral density, find resonance peaks, compare belts, flag anomalies.
+- **Analyse** — compute power spectral density, find resonance peaks, compare belts, flag anomalies,
+  and measure motor quality (vibration at multiples of a motor's own full-step frequency, isolating
+  the motor and driver from the machine's structural response).
 - **Recommend** — suggest the input-shaper type and frequency (`M593`) that removes the most
   residual vibration, weighing every measured axis at once when more than one was swept.
 - **Verify** — re-measure with the shaper applied and confirm the ringing is gone before saving.
