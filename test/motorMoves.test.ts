@@ -1,0 +1,156 @@
+import { describe, expect, it } from "vitest";
+
+import {
+	analysisWindow, buildMotorMove, constantSpeedWindow, deriveMotorOptions, maxSpeedForRate,
+} from "../src/capture/motorMoves";
+import type { MachineIO } from "../src/capture/orchestrator";
+import { runMotorPointCapture } from "../src/capture/orchestrator";
+
+const coreXY = {
+	move: {
+		travelAcceleration: 5000,
+		kinematics: {
+			forwardMatrix: [[0.5, 0.5], [0.5, -0.5]],
+			inverseMatrix: [[1, 1], [1, -1]],
+		},
+		axes: [
+			{
+				letter: "X", min: 0, max: 300, visible: true, acceleration: 4000, speed: 500,
+				stepsPerMm: 80, microstepping: { value: 16 },
+			},
+			{
+				letter: "Y", min: 0, max: 300, visible: true, acceleration: 4000, speed: 500,
+				stepsPerMm: 80, microstepping: { value: 16 },
+			},
+		],
+	},
+};
+
+const cartesianWithZ = {
+	move: {
+		travelAcceleration: 1000,
+		kinematics: {},
+		axes: [
+			{
+				letter: "X", min: 0, max: 300, visible: true, acceleration: 3000, speed: 300,
+				stepsPerMm: 80, microstepping: { value: 16 },
+			},
+			{
+				letter: "Z", min: 0, max: 400, visible: true, acceleration: 500, speed: 40,
+				stepsPerMm: 400, microstepping: { value: 16 },
+			},
+		],
+	},
+};
+
+describe("deriveMotorOptions", () => {
+	it("derives two diagonal motors on CoreXY", () => {
+		const options = deriveMotorOptions(coreXY);
+		expect(options.length).toBe(2);
+		const labels = options.map((o) => o.label).sort();
+		expect(labels).toEqual(["X+Y", "X-Y"]);
+		for (const o of options) {
+			expect(o.axes).toEqual(["X", "Y"]);
+			expect(o.fullStepsPerMm).toBe(5);
+		}
+	});
+
+	it("every direction is a unit vector with a positive first component", () => {
+		for (const o of deriveMotorOptions(coreXY)) {
+			const length = Math.sqrt(o.direction.reduce((sum, v) => sum + v * v, 0));
+			expect(length).toBeCloseTo(1, 6);
+			expect(o.direction[0]).toBeGreaterThan(0);
+		}
+	});
+
+	it("omits a motor with no reported microstepping", () => {
+		const noMicrostepping = {
+			move: {
+				kinematics: coreXY.move.kinematics,
+				axes: coreXY.move.axes.map((a) => ({ ...a, microstepping: null })),
+			},
+		};
+		expect(deriveMotorOptions(noMicrostepping)).toEqual([]);
+	});
+
+	it("offers Z only on non-core kinematics", () => {
+		const options = deriveMotorOptions(cartesianWithZ);
+		expect(options.length).toBe(1);
+		expect(options[0].motor).toBe("Z");
+		expect(options[0].stepFactor).toBe(1);
+	});
+});
+
+describe("buildMotorMove", () => {
+	it("centres the move and sets the feedrate", () => {
+		const option = deriveMotorOptions(coreXY).find((o) => o.label === "X+Y")!;
+		const m = buildMotorMove(option, coreXY, 100, 50);
+		expect(m.feedrate).toBe(3000);
+		// Centre of X/Y travel is 150,150; the diagonal move should straddle it.
+		const midStart = (m.start[0] + m.end[0]) / 2;
+		const midEnd = (m.start[1] + m.end[1]) / 2;
+		expect(midStart).toBeCloseTo(150, 1);
+		expect(midEnd).toBeCloseTo(150, 1);
+	});
+});
+
+describe("constantSpeedWindow", () => {
+	it("returns a positive duration for a long, slow move", () => {
+		const w = constantSpeedWindow({
+			motor: "X", axes: ["X"], start: [0], end: [100], distance: 100,
+			feedrate: 600, acceleration: 1000, fullStepsPerMm: 5, stepFactor: 1,
+		});
+		expect(w.duration).toBeGreaterThan(0);
+	});
+
+	it("returns zero duration for a triangular (too-short) move", () => {
+		const w = constantSpeedWindow({
+			motor: "X", axes: ["X"], start: [0], end: [2], distance: 2,
+			feedrate: 12000, acceleration: 1000, fullStepsPerMm: 5, stepFactor: 1,
+		});
+		expect(w.duration).toBe(0);
+		expect(w.moveDuration).toBeGreaterThan(0);
+	});
+});
+
+describe("maxSpeedForRate", () => {
+	it("keeps the full-step frequency below Nyquist with search margin", () => {
+		const option = deriveMotorOptions(coreXY).find((o) => o.label === "X+Y")!;
+		const speed = maxSpeedForRate(option, 1344);
+		const fullStepHz = speed * option.stepFactor * option.fullStepsPerMm;
+		expect(fullStepHz).toBeLessThan(1344 / 2);
+	});
+});
+
+describe("analysisWindow", () => {
+	it("covers the middle 80% of the constant-speed segment", () => {
+		const m = {
+			motor: "X", axes: ["X"], start: [0], end: [100], distance: 100,
+			feedrate: 600, acceleration: 1000, fullStepsPerMm: 5, stepFactor: 1,
+		};
+		const w = constantSpeedWindow(m);
+		const rate = 1000;
+		const win = analysisWindow(m, rate, Math.ceil((w.moveDuration + 1) * rate));
+		expect(win.start).toBeGreaterThan(0);
+		expect(win.end).toBeGreaterThan(win.start);
+	});
+});
+
+describe("runMotorPointCapture", () => {
+	it("positions, then arms and executes the pass in one line", async () => {
+		const calls: Array<string> = [];
+		const io: MachineIO = {
+			sendCode: async (code) => { calls.push(code); return "ok"; },
+			upload: async () => {},
+			download: async () => "",
+		};
+		const option = deriveMotorOptions(coreXY).find((o) => o.label === "X+Y")!;
+		const move = buildMotorMove(option, coreXY, 100, 50);
+		await runMotorPointCapture(io, { accelerometer: { id: "0", label: "MB" }, move, expectedSampleRate: 1344 });
+		expect(calls[0]).toContain("G1 X");
+		expect(calls[0]).toContain("M400");
+		expect(calls[1]).toContain("M956 P0");
+		expect(calls[1]).toContain('F"rlab-motorx');
+		expect(calls[1]).toContain(`F${move.feedrate}`);
+	});
+});

@@ -18,6 +18,7 @@ import { computed, ref } from "vue";
 
 import type { OrientationSolution } from "./analysis/axesMap";
 import type { BeltComparison } from "./analysis/belts";
+import type { MotorFinding, MotorSweep } from "./analysis/motorHarmonics";
 import type { CaptureAnalysis } from "./analysis/pipeline";
 import type { CombinedRecommendationResult } from "./analysis/recommend";
 import type { VibrationProfile } from "./analysis/vibration";
@@ -35,6 +36,21 @@ export interface SessionResult {
 /** One axis of a multi-axis calibration run (kept here so the overlay survives leaving the page). */
 export interface MultiAxisResult { axis: string; analysis: CaptureAnalysis; capture: AccelCapture }
 
+/** Result of the motor-quality task: a speed sweep summarized by absolute frequency, plus its findings. */
+export interface MotorSessionResult {
+	/** Motor letter, for labelling - a motor is per-driver, not per-tool, so this disambiguates a
+	 *  shared motor (e.g. X on a tool changer) seen under two different tool sessions. */
+	motor: string;
+	/** Display label, e.g. "X+Y". */
+	label: string;
+	sweep: MotorSweep;
+	findings: Array<MotorFinding>;
+	/** Speeds (mm/s) actually recorded. */
+	speeds: Array<number>;
+	/** Worst overflow count across the recordings that made up this result. */
+	overflows: number;
+}
+
 /** Everything one tool's own measurement session holds. */
 interface ToolSession {
 	lastResult: SessionResult | null;
@@ -44,10 +60,14 @@ interface ToolSession {
 	orientationResult: { solution: OrientationSolution; accelId: string; coupling: number } | null;
 	beltResult: BeltComparison | null;
 	profileResult: VibrationProfile | null;
+	motorResult: MotorSessionResult | null;
 }
 
 function emptySession(): ToolSession {
-	return { lastResult: null, multiResults: [], combinedRec: null, orientationResult: null, beltResult: null, profileResult: null };
+	return {
+		lastResult: null, multiResults: [], combinedRec: null, orientationResult: null,
+		beltResult: null, profileResult: null, motorResult: null,
+	};
 }
 
 /**
@@ -89,12 +109,15 @@ export const combinedRec = sessionField("combinedRec");
 export const orientationResult = sessionField("orientationResult");
 export const beltResult = sessionField("beltResult");
 export const profileResult = sessionField("profileResult");
+export const motorResult = sessionField("motorResult");
 
 export const measurementRunning = ref(false);
 
 // View selection lives here too, so returning to the plugin restores the same task + axes (and the
 // matching result), not the default Calibrate tab.
-export type CaptureMethod = "sweep" | "move" | "custom" | "belts" | "profile" | "excite" | "axescheck";
+export type CaptureMethod = "sweep" | "move" | "custom" | "belts" | "profile" | "excite" | "axescheck" | "motor";
 export const method = ref<CaptureMethod>("sweep");
 export const selectedAxis = ref("X");
 export const selectedAxes = ref<Array<string>>(["X", "Y"]);
+/** Motor letter picked for the motor-quality task, kept here so the pick survives leaving the page. */
+export const selectedMotor = ref("");

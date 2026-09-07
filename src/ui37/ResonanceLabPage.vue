@@ -222,6 +222,8 @@
 						<v-select v-if="method === 'sweep'" v-model="selectedAxes" :items="axisItems" multiple chips closable-chips
 								  density="compact" variant="outlined" hide-details style="min-width: 170px"
 								  :label="$t('plugins.resonanceLab.controls.axes')" :disabled="running" />
+						<v-select v-else-if="method === 'motor'" v-model="selectedMotor" :items="motorItems" density="compact" variant="outlined"
+								  hide-details style="min-width: 140px" :label="$t('plugins.resonanceLab.controls.motor')" :disabled="running" />
 						<v-select v-else-if="activeTask.usesAxis" v-model="selectedAxis" :items="axisItems" density="compact" variant="outlined"
 								  hide-details style="max-width: 110px" :label="$t('plugins.resonanceLab.controls.axis')" :disabled="running" />
 						<v-chip v-else size="small" variant="tonal" prepend-icon="mdi-axis-arrow">{{ taskAxisNote }}</v-chip>
@@ -240,6 +242,10 @@
 						<v-text-field v-if="activeTask.params.includes('speedMin')" v-model.number="adv.speedMin" type="number" density="compact" variant="outlined" hide-details label="Min (mm/s)" style="max-width: 132px" :disabled="running"><template #append-inner><HelpTip text="Lowest test speed, in mm/s." /></template></v-text-field>
 						<v-text-field v-if="activeTask.params.includes('speedMax')" v-model.number="adv.speedMax" type="number" density="compact" variant="outlined" hide-details label="Max (mm/s)" style="max-width: 132px" :disabled="running"><template #append-inner><HelpTip text="Highest test speed, in mm/s." /></template></v-text-field>
 						<v-text-field v-if="activeTask.params.includes('speedStep')" v-model.number="adv.speedStep" type="number" density="compact" variant="outlined" hide-details label="Step (mm/s)" style="max-width: 132px" :disabled="running"><template #append-inner><HelpTip text="Speed increment between test runs, in mm/s." /></template></v-text-field>
+						<v-text-field v-if="activeTask.params.includes('motorSpeedMin')" v-model.number="adv.motorSpeedMin" type="number" density="compact" variant="outlined" hide-details label="Min (mm/s)" style="max-width: 132px" :disabled="running"><template #append-inner><HelpTip text="Lowest motor test speed, in mm/s." /></template></v-text-field>
+						<v-text-field v-if="activeTask.params.includes('motorSpeedMax')" v-model.number="adv.motorSpeedMax" type="number" density="compact" variant="outlined" hide-details label="Max (mm/s)" style="max-width: 132px" :disabled="running"><template #append-inner><HelpTip text="Highest motor test speed, in mm/s — clamped so the full-step frequency stays below the accelerometer's Nyquist frequency." /></template></v-text-field>
+						<v-text-field v-if="activeTask.params.includes('motorSpeedStep')" v-model.number="adv.motorSpeedStep" type="number" density="compact" variant="outlined" hide-details label="Step (mm/s)" style="max-width: 132px" :disabled="running"><template #append-inner><HelpTip text="Speed increment between motor test runs, in mm/s." /></template></v-text-field>
+						<v-text-field v-if="activeTask.params.includes('motorLength')" v-model.number="adv.motorLength" type="number" density="compact" variant="outlined" hide-details label="Length (mm)" style="max-width: 132px" :disabled="running"><template #append-inner><HelpTip text="Length of the motor-isolating move, in mm. Longer moves reach constant speed at higher test speeds." /></template></v-text-field>
 						<v-spacer />
 						<v-btn color="primary" prepend-icon="mdi-play" :loading="running" :disabled="!canMeasure" @click="onMeasureClick">
 							{{ $t("plugins.resonanceLab.controls.measure") }}
@@ -249,6 +255,7 @@
 								rows="4" hide-details :label="$t('plugins.resonanceLab.controls.customMoves')" :disabled="running" />
 					<div class="text-caption text-medium-emphasis mt-2">
 						{{ $t(`plugins.resonanceLab.tasks.${method}.run`) }} · {{ $t("plugins.resonanceLab.durationLabel", { dur: durationEstimate }) }}
+						<template v-if="method === 'motor' && motorFreqHint"> · {{ motorFreqHint }} full-step</template>
 					</div>
 				</v-sheet>
 
@@ -408,6 +415,29 @@
 					</div>
 				</template>
 
+				<!-- Motor quality result -->
+				<template v-else-if="motorResult && motorVerdict && motorChart">
+					<v-alert v-if="motorResult.overflows > 0" type="warning" variant="tonal" density="compact" class="mb-2">
+						{{ $t("plugins.resonanceLab.overflows", { count: motorResult.overflows }) }}
+					</v-alert>
+					<v-card variant="tonal" :color="motorVerdict.color" class="mb-3">
+						<v-card-text class="d-flex align-center ga-3 py-3">
+							<v-icon size="large">{{ motorVerdict.icon }}</v-icon>
+							<div>
+								<div class="text-subtitle-1 font-weight-medium">{{ motorVerdict.headline }}</div>
+								<div v-if="motorVerdict.detail" class="text-body-2">{{ motorVerdict.detail }}</div>
+							</div>
+						</v-card-text>
+					</v-card>
+					<div style="flex: 1 1 0; min-height: 420px">
+						<LineChart :labels="motorChart.labels" :series="motorChart.series"
+								   x-title="Frequency (Hz)" y-title="Displacement (um)" />
+					</div>
+					<v-alert v-for="(row, i) in motorFindingRows" :key="i" :type="row.color" variant="tonal" density="compact" class="mt-2 mb-0">
+						{{ row.text }}
+					</v-alert>
+				</template>
+
 				<!-- Multi-axis calibration overlay -->
 				<template v-else-if="multiResults.length && multiChart">
 					<v-card v-if="combinedSummary" variant="tonal" color="primary" class="mb-2">
@@ -551,7 +581,10 @@
 import { createHost } from "./host";
 import { useResonanceLab } from "../core/useResonanceLab";
 import { DEFAULT_PROGRAM_DIR } from "../capture/orchestrator";
-import { beltResult, method, multiResults, orientationResult, profileResult, selectedAxes, selectedAxis } from "../state";
+import {
+	beltResult, method, motorResult, multiResults, orientationResult, profileResult,
+	selectedAxes, selectedAxis, selectedMotor,
+} from "../state";
 import { applyUpdateNow, applying as updateApplying, checking, pendingReload, updateState } from "../updateCheck";
 import { AboutDialog, HelpTip } from "dwc-plugin-runtime";
 import LineChart from "./components/LineChart.vue";
@@ -580,6 +613,8 @@ const {
 	accelItems,
 	selectedAccel,
 	axisItems,
+	motorItems,
+	motorFreqHint,
 	adv,
 	goalTasks,
 	diagTasks,
@@ -602,6 +637,9 @@ const {
 	beltVerdict,
 	profileChart,
 	profileVerdict,
+	motorChart,
+	motorVerdict,
+	motorFindingRows,
 	multiChart,
 	multiVerifyChart,
 	multiRows,

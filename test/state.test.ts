@@ -1,10 +1,18 @@
 import { describe, expect, it } from "vitest";
 import { watchEffect } from "vue";
 
-import { activeTool, lastResult, sessions, type SessionResult } from "../src/state";
+import { activeTool, lastResult, motorResult, type MotorSessionResult, sessions, type SessionResult } from "../src/state";
 
 function fakeResult(axis: string): SessionResult {
 	return { axis, when: new Date(), source: "test", analysis: {} as SessionResult["analysis"] };
+}
+
+function fakeMotorResult(motor: string): MotorSessionResult {
+	return {
+		motor, label: motor, speeds: [50], overflows: 0,
+		sweep: { orders: [1], frequencies: [100], amplitudes: [[0.1]], ratios: [[null]] },
+		findings: [],
+	};
 }
 
 describe("per-tool session state", () => {
@@ -55,5 +63,17 @@ describe("per-tool session state", () => {
 		expect(runs).toBeGreaterThan(runsAfterInit);
 		expect(seenAxis).toBe("Y");
 		stop();
+	});
+
+	it("keeps each tool's motor result separate", () => {
+		activeTool.value = 0;
+		motorResult.value = fakeMotorResult("X");
+		activeTool.value = 1;
+		motorResult.value = fakeMotorResult("Y");
+
+		activeTool.value = 0;
+		expect(motorResult.value?.motor).toBe("X");
+		activeTool.value = 1;
+		expect(motorResult.value?.motor).toBe("Y");
 	});
 });

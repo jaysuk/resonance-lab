@@ -19,6 +19,9 @@ import { buildReport, downloadReport } from "dwc-plugin-runtime/diagnostics";
 
 import { analyzeAxisBurst, detectVerticalAxis, solveOrientation } from "../analysis/axesMap";
 import { compareBelts } from "../analysis/belts";
+import {
+	analyzeMotorHarmonics, gradeOrders, type MotorHarmonics, type MotorLevel, summarizeMotorSweep, toDisplacementUm,
+} from "../analysis/motorHarmonics";
 import { analyseCapture, type CaptureAnalysis } from "../analysis/pipeline";
 import { findBestShaperCombined, type CombinedRecommendationResult } from "../analysis/recommend";
 import { SHAPER_DISPLAY_NAMES, type ShaperName } from "../analysis/shapers";
@@ -26,9 +29,13 @@ import { computeSpectrogram } from "../analysis/stft";
 import { buildVibrationProfile } from "../analysis/vibration";
 import { cropCaptureToDuration, parseAccelCsv } from "../capture/csv";
 import {
+	analysisWindow, buildMotorMove, constantSpeedWindow, deriveMotorOptions, fullStepFrequency,
+	maxSpeedForRate, type MotorOption,
+} from "../capture/motorMoves";
+import {
 	beltEstimatedDurationSec, DEFAULT_PROGRAM_DIR, downloadCapture, findAccelerometers, parseAccelRateFromReport,
-	resizeForActualRate, runBeltCapture, runFixedExcitation, runNativeCapture, runSpeedPointCapture, runSweepCapture,
-	type AccelerometerRef, type MachineIO,
+	resizeForActualRate, runBeltCapture, runFixedExcitation, runMotorPointCapture, runNativeCapture,
+	runSpeedPointCapture, runSweepCapture, type AccelerometerRef, type MachineIO,
 } from "../capture/orchestrator";
 import { shaperRestoreGcode, type ShaperState } from "../capture/sweep";
 import { accelForTool } from "../capture/tools";
@@ -37,8 +44,8 @@ import {
 	type DirectiveEditPlan, type ShaperScope,
 } from "../config/machineConfig";
 import {
-	activeTool, beltResult, combinedRec, lastResult, measurementRunning, method, multiResults, orientationResult,
-	profileResult, selectedAxes, selectedAxis, type CaptureMethod, type MultiAxisResult,
+	activeTool, beltResult, combinedRec, lastResult, measurementRunning, method, motorResult, multiResults,
+	orientationResult, profileResult, selectedAxes, selectedAxis, selectedMotor, type CaptureMethod, type MultiAxisResult,
 } from "../state";
 // Only the pieces the logic itself drives. The rest of the update surface (updateState,
 // pendingReload, the apply/check actions) is module-level reactive state the templates import
@@ -171,6 +178,50 @@ export function useResonanceLab(host: HostAdapter) {
 	// result) persist across leaving the page. Calibration can sweep several axes and overlay them.
 	type Method = CaptureMethod;
 
+	// ── Motor-quality task ──────────────────────────────────────────────────────
+	const motorOptions = computed<Array<MotorOption>>(() => deriveMotorOptions(host.model()));
+	const motorItems = computed(() => motorOptions.value.map((o) => ({ title: o.label, value: o.motor })));
+	const activeMotor = computed<MotorOption | null>(() =>
+		motorOptions.value.find((o) => o.motor === selectedMotor.value) ?? motorOptions.value[0] ?? null);
+
+	// Speeds planned for the motor sweep, clamped so the fundamental stays below the accelerometer's
+	// Nyquist frequency (maxSpeedForRate) - the binding constraint, since harmonics above Nyquist are
+	// merely dropped by analyzeMotorHarmonics and must not limit speed further.
+	function plannedMotorSpeeds(sampleRate: number): Array<number> {
+		const motor = activeMotor.value;
+		if (!motor) {
+			return [];
+		}
+		const cap = sampleRate > 0 ? maxSpeedForRate(motor, sampleRate) : Infinity;
+		const speeds: Array<number> = [];
+		const step = Math.max(1, adv.value.motorSpeedStep);
+		for (let v = adv.value.motorSpeedMin; v <= adv.value.motorSpeedMax; v += step) {
+			if (v > 0 && v <= cap) {
+				speeds.push(v);
+			}
+		}
+		return speeds;
+	}
+
+	/** Nominal (unclamped) sample rate used for the live UI hint - the real per-accelerometer rate is
+	 *  only known once measure() reads it from the machine. */
+	const motorSpeeds = computed(() => plannedMotorSpeeds(1000));
+
+	const motorFreqHint = computed(() => {
+		const motor = activeMotor.value;
+		if (!motor || motorSpeeds.value.length === 0) {
+			return "";
+		}
+		const freqs = motorSpeeds.value.map((speed) => speed * motor.stepFactor * motor.fullStepsPerMm);
+		return `${Math.round(Math.min(...freqs))} – ${Math.round(Math.max(...freqs))} Hz`;
+	});
+
+	watch(motorOptions, (options) => {
+		if (!options.some((o) => o.motor === selectedMotor.value)) {
+			selectedMotor.value = options[0]?.motor ?? "";
+		}
+	}, { immediate: true });
+
 	const LS_Z_HEIGHT = "resonanceLab.zHeight";
 	function loadZHeight(): number | null {
 		try {
@@ -191,6 +242,7 @@ export function useResonanceLab(host: HostAdapter) {
 		exciteFreq: 40, exciteSeconds: 10,
 		speedMin: 30, speedMax: 180, speedStep: 30,
 		customMoves: "",
+		motorSpeedMin: 20, motorSpeedMax: 120, motorSpeedStep: 25, motorLength: 100,
 		/** Move to this Z (mm) before measuring; null = leave Z at whatever it currently is. */
 		zHeight: loadZHeight() as number | null,
 	});
@@ -215,6 +267,7 @@ export function useResonanceLab(host: HostAdapter) {
 		{ id: "belts", group: "goal", icon: "mdi-scale-balance", usesAxis: false, params: ["beltStart", "beltEnd", "beltHz"] },
 		{ id: "profile", group: "goal", icon: "mdi-speedometer", usesAxis: true, params: ["speedMin", "speedMax", "speedStep"] },
 		{ id: "axescheck", group: "goal", icon: "mdi-axis-arrow", usesAxis: false, params: [] },
+		{ id: "motor", group: "goal", icon: "mdi-cog-outline", usesAxis: false, params: ["motorSpeedMin", "motorSpeedMax", "motorSpeedStep", "motorLength"] },
 		{ id: "excite", group: "diag", icon: "mdi-pulse", usesAxis: true, params: ["exciteFreq", "exciteSeconds"] },
 		{ id: "move", group: "diag", icon: "mdi-arrow-left-right", usesAxis: true, params: [] },
 		{ id: "custom", group: "diag", icon: "mdi-code-braces", usesAxis: true, params: ["customMoves"] },
@@ -233,6 +286,7 @@ export function useResonanceLab(host: HostAdapter) {
 		lastResult.value = null;
 		beltResult.value = null;
 		profileResult.value = null;
+		motorResult.value = null;
 		orientationResult.value = null;
 		verifyResult.value = null;
 		multiResults.value = [];
@@ -264,15 +318,32 @@ export function useResonanceLab(host: HostAdapter) {
 			}
 			case "excite": secs = a.exciteSeconds + 4; break;
 			case "axescheck": secs = 10; break;
+			case "motor": {
+				const motor = activeMotor.value;
+				secs = motor
+					? motorSpeeds.value.reduce((sum, speed) => sum + constantSpeedWindow(buildMotorMove(motor, host.model(), a.motorLength, speed)).moveDuration + 4, 0)
+					: 6;
+				break;
+			}
 			default: secs = 6; break;
 		}
 		const rounded = Math.max(2, Math.round(secs));
 		return rounded >= 90 ? `~${Math.round(rounded / 60)} min` : `~${rounded}s`;
 	});
 
+	/** Every planned motor speed produces an analysable (non-triangular) constant-speed move. */
+	const motorSpeedsUsable = computed(() => {
+		const motor = activeMotor.value;
+		if (!motor || motorSpeeds.value.length === 0) {
+			return false;
+		}
+		return motorSpeeds.value.every((speed) => constantSpeedWindow(buildMotorMove(motor, host.model(), adv.value.motorLength, speed)).duration > 0);
+	});
+
 	const canMeasure = computed(() => isConnected.value && !running.value && !loadingCapture.value
 		&& (selectedAccel.value !== null || accelItems.value.length > 0)
-		&& (method.value !== "sweep" || selectedAxes.value.length > 0));
+		&& (method.value !== "sweep" || selectedAxes.value.length > 0)
+		&& (method.value !== "motor" || (activeMotor.value !== null && motorSpeedsUsable.value)));
 
 	// ── Measurement ──────────────────────────────────────────────────────────────
 	/**
@@ -438,6 +509,9 @@ export function useResonanceLab(host: HostAdapter) {
 		if (method.value === "belts" || method.value === "axescheck") {
 			return ["X", "Y"];
 		}
+		if (method.value === "motor") {
+			return activeMotor.value?.axes ?? [];
+		}
 		return [selectedAxis.value]; // excite, move, profile
 	}
 
@@ -564,6 +638,7 @@ export function useResonanceLab(host: HostAdapter) {
 		error.value = "";
 		beltResult.value = null;
 		profileResult.value = null;
+		motorResult.value = null;
 		orientationResult.value = null;
 		verifyResult.value = null;
 		multiVerifyResult.value = null;
@@ -612,6 +687,42 @@ export function useResonanceLab(host: HostAdapter) {
 					lastResult.value = null;
 				} finally {
 					await io.sendCode(`M955 P${accel.id} I${prevOrientation}`);
+				}
+			} else if (method.value === "motor") {
+				const motor = activeMotor.value;
+				if (!motor) {
+					error.value = t("motor.noMotor");
+					return;
+				}
+				const results: Array<MotorHarmonics> = [];
+				const speeds: Array<number> = [];
+				let overflows = 0;
+				await withShaperDisabled(async () => {
+					for (const speed of plannedMotorSpeeds(sampleRate)) {
+						const m = buildMotorMove(motor, host.model(), adv.value.motorLength, speed);
+						const run = await raceCancellable(runMotorPointCapture(io, {
+							accelerometer: accel, move: m, expectedSampleRate: sampleRate,
+						}));
+						const cap = parseAccelCsv(await raceCancellable(downloadCapture(io, run)));
+						const w = analysisWindow(m, cap.samplingRate, cap.channels[0]?.length ?? 0);
+						const slice = cap.channels.map((ch) => ch.slice(w.start, w.end));
+						try {
+							results.push(analyzeMotorHarmonics(slice, cap.samplingRate, fullStepFrequency(m)));
+							speeds.push(speed);
+						} catch {
+							// Above Nyquist at this speed after all (the real per-recording rate can differ
+							// slightly from the sizing estimate) - skip the point, keep the rest of the sweep.
+						}
+						overflows = Math.max(overflows, cap.overflows);
+					}
+				});
+				lastResult.value = null;
+				if (results.length === 0) {
+					error.value = t("motor.noSpeeds");
+					motorResult.value = null;
+				} else {
+					const sweep = summarizeMotorSweep(results);
+					motorResult.value = { motor: motor.motor, label: motor.label, sweep, findings: gradeOrders(sweep), speeds, overflows };
 				}
 			} else if (method.value === "belts") {
 				// Tension matching only needs the band the belt resonances live in — a light 15–95 Hz
@@ -919,6 +1030,60 @@ export function useResonanceLab(host: HostAdapter) {
 		};
 	});
 
+	// ── Motor quality result ─────────────────────────────────────────────────────
+	const MOTOR_ORDER_COLORS = ["#2196f3", "#ff9800", "#4caf50", "#9c27b0", "#00bcd4", "#e91e63", "#795548", "#607d8b"];
+	const MOTOR_LEVEL_RANK: Record<MotorLevel, number> = { low: 0, moderate: 1, high: 2 };
+
+	function motorLevelColor(level: MotorLevel): "warning" | "info" | "success" {
+		return level === "high" ? "warning" : level === "moderate" ? "info" : "success";
+	}
+	function motorLevelIcon(level: MotorLevel): string {
+		return level === "high" ? "mdi-alert" : level === "moderate" ? "mdi-information-outline" : "mdi-check-decagram";
+	}
+	function motorFindingText(f: { key: string; displacementUm: number; frequency: number; ratio: number | null; level: MotorLevel }, motor: string): string {
+		return t(`motor.findings.${f.key}`, {
+			motor, um: f.displacementUm.toFixed(2), hz: Math.round(f.frequency),
+			ratio: f.ratio !== null ? Math.round(f.ratio * 100) : "-", level: t(`motor.levels.${f.level}`),
+		});
+	}
+
+	const motorChart = computed(() => {
+		const r = motorResult.value;
+		if (!r) {
+			return null;
+		}
+		const sweep = r.sweep;
+		return {
+			labels: sweep.frequencies.map((f) => Math.round(f)),
+			series: sweep.orders.map((order, orderIndex) => ({
+				label: `${order}x`,
+				data: sweep.amplitudes[orderIndex].map((amplitude, i) => (amplitude !== null ? toDisplacementUm(amplitude, sweep.frequencies[i]) : NaN)),
+				color: MOTOR_ORDER_COLORS[orderIndex % MOTOR_ORDER_COLORS.length],
+			})),
+		};
+	});
+
+	/** One row per finding, for the alert list below the verdict card. */
+	const motorFindingRows = computed(() => {
+		const r = motorResult.value;
+		if (!r) {
+			return [];
+		}
+		return r.findings.map((f) => ({ color: motorLevelColor(f.level), icon: motorLevelIcon(f.level), text: motorFindingText(f, r.motor) }));
+	});
+
+	const motorVerdict = computed(() => {
+		const r = motorResult.value;
+		if (!r) {
+			return null;
+		}
+		if (r.findings.length === 0 || r.findings.every((f) => f.level === "low")) {
+			return { color: "success", icon: "mdi-check-decagram", headline: t("motor.clean"), detail: t("motor.cleanDetail") };
+		}
+		const worst = r.findings.reduce((w, f) => (MOTOR_LEVEL_RANK[f.level] > MOTOR_LEVEL_RANK[w.level] ? f : w));
+		return { color: motorLevelColor(worst.level), icon: motorLevelIcon(worst.level), headline: motorFindingText(worst, r.motor), detail: "" };
+	});
+
 	// ── Multi-axis calibration overlay ───────────────────────────────────────────
 	const AXIS_COLORS: Record<string, string> = { X: "#2196f3", Y: "#ff9800", Z: "#4caf50", U: "#9c27b0", V: "#00bcd4", W: "#e91e63" };
 	const multiChart = computed(() => {
@@ -1103,7 +1268,7 @@ export function useResonanceLab(host: HostAdapter) {
 
 	/** Our captures are named rlab-<kind>-<axis>-<YYYYMMDDHHMMSS>.csv; parse that for grouping + labels. */
 	function parseCaptureName(name: string, size: number): RemoteCapture {
-		const m = /^rlab-(belta|beltb|sweep|move|fix\d+|speed\d+)-([a-z]+)-(\d{14})\.csv$/i.exec(name);
+		const m = /^rlab-(belta|beltb|sweep|move|fix\d+|speed\d+|motor[a-z]\d+)-([a-z]+)-(\d{14})\.csv$/i.exec(name);
 		if (!m) {
 			return { name, kind: "other", axis: "", when: new Date(0), size };
 		}
@@ -1120,6 +1285,7 @@ export function useResonanceLab(host: HostAdapter) {
 		if (kind === "move") { return { label: t("captures.kinds.move"), icon: "mdi-arrow-left-right" }; }
 		if (kind.startsWith("fix")) { return { label: t("captures.kinds.excite"), icon: "mdi-pulse" }; }
 		if (kind.startsWith("speed")) { return { label: t("captures.kinds.speed"), icon: "mdi-speedometer" }; }
+		if (kind.startsWith("motor")) { return { label: t("captures.kinds.motor"), icon: "mdi-cog-outline" }; }
 		return { label: t("captures.kinds.other"), icon: "mdi-file-delimited-outline" };
 	}
 
@@ -1521,6 +1687,8 @@ export function useResonanceLab(host: HostAdapter) {
 		accelItems,
 		selectedAccel,
 		axisItems,
+		motorItems,
+		motorFreqHint,
 		adv,
 		goalTasks,
 		diagTasks,
@@ -1543,6 +1711,9 @@ export function useResonanceLab(host: HostAdapter) {
 		beltVerdict,
 		profileChart,
 		profileVerdict,
+		motorChart,
+		motorVerdict,
+		motorFindingRows,
 		multiChart,
 		multiVerifyChart,
 		multiRows,

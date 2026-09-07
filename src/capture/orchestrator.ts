@@ -10,6 +10,7 @@
  *  - ADVANCED: the user supplies their own move profile (the native flow the stock plugin offers);
  *    we arm the recorder around it.
  */
+import { axisWords, constantSpeedWindow, type MotorMove } from "./motorMoves";
 import { generateFixedExcitation, generateSweep, type ShaperState, type SweepOptions, type SweepProgram } from "./sweep";
 import { mapAccelerometers } from "./tools";
 
@@ -479,6 +480,41 @@ export async function runSpeedPointCapture(io: MachineIO, options: SpeedPointCap
 	return {
 		csvPath,
 		program: { lines: [], pulses: 2, durationSec: (4 * span) / options.speed, maxExcursion: span },
+		accelId: options.accelerometer.id,
+		runsBefore,
+	};
+}
+
+export interface MotorPointCaptureOptions {
+	accelerometer: AccelerometerRef;
+	move: MotorMove;
+	expectedSampleRate?: number;
+	/** Feedrate for the positioning move to the start (mm/min). */
+	travelFeedrate?: number;
+}
+
+/**
+ * Record one motor-isolating pass at constant speed: position to the move's start, then arm and
+ * execute the pass in one line. No program file is uploaded (the move is short and inline, like
+ * runSpeedPointCapture), so there's nothing to clean up afterwards.
+ */
+export async function runMotorPointCapture(io: MachineIO, options: MotorPointCaptureOptions): Promise<CaptureRun> {
+	const m = options.move;
+	const travelFeedrate = options.travelFeedrate ?? 30000;
+	const name = captureName(`motor${m.motor.toLowerCase()}${Math.round(m.feedrate / 60)}`, m.axes.join(""));
+	const csvPath = `${CAPTURE_DIR}/${name}`;
+	const rate = options.expectedSampleRate ?? 1000;
+
+	await sendChecked(io, `G1 ${axisWords(m, m.start)} F${travelFeedrate} M400`);
+
+	const window = constantSpeedWindow(m);
+	const samples = Math.min(200000, Math.ceil(1.05 * rate * (window.start + 0.9 * window.duration + 0.15)));
+	const runsBefore = io.accelRuns?.(options.accelerometer.id);
+	await sendChecked(io, `M956 P${options.accelerometer.id} S${samples} A0 F"${name}" G1 ${axisWords(m, m.end)} F${m.feedrate} M400`);
+
+	return {
+		csvPath,
+		program: { lines: [], pulses: 1, durationSec: window.moveDuration, maxExcursion: m.distance / 2 },
 		accelId: options.accelerometer.id,
 		runsBefore,
 	};

@@ -18,7 +18,8 @@
 		"noCaptures": "No capture files found",
 		"diagnostics": "Download diagnostics report",
 		"about": "About, updates & diagnostics",
-		"zHeight": "Z height (mm)"
+		"zHeight": "Z height (mm)",
+		"motor": "Motor"
 	},
 	"update": {
 		"available": "Resonance Lab {version} is available.",
@@ -41,8 +42,9 @@
 		"custom": "Custom profile (advanced)",
 		"belts": "Belt comparison (CoreXY)",
 		"profile": "Vibration profile (speed sweep)",
-		"excite": "Excite one frequency (diagnostic)",
-		"axescheck": "Accelerometer orientation check"
+		"axescheck": "Accelerometer orientation check",
+		"motor": "Motor quality (harmonic analysis)",
+		"excite": "Excite one frequency (diagnostic)"
 	},
 	"orientation": {
 		"suggest": "Suggested orientation:",
@@ -73,6 +75,22 @@
 		"cleanDetail": "Vibration stays near the baseline across the tested speed range.",
 		"problems": "Avoid printing at: {speeds}",
 		"problemsDetail": "These speeds excite a resonance (≥2× the baseline). Quietest tested speeds: {quiet}."
+	},
+	"motor": {
+		"clean": "No motor issues found",
+		"cleanDetail": "Vibration at every checked harmonic stays low across the tested speed range.",
+		"noMotor": "No drivable motor found on this axis configuration.",
+		"noSpeeds": "None of the planned speeds produced an analysable recording — try a lower maximum speed or a longer move.",
+		"findings": {
+			"fullStep": "{motor} motor: full-step vibration up to {um} um at {hz} Hz ({level}), caused by detent torque and step ripple",
+			"phase": "{motor} motor: the component with a period of two full steps reaches {um} um at {hz} Hz, {ratio}% of the full-step vibration ({level}) — indicates a current imbalance between the two coils",
+			"waveform": "{motor} motor: components with a period of one electrical cycle reach {um} um at {hz} Hz, {ratio}% of the full-step vibration ({level}) — indicate a distorted current waveform"
+		},
+		"levels": {
+			"low": "low",
+			"moderate": "moderate",
+			"high": "high"
+		}
 	},
 	"multi": {
 		"headline": "Per-axis resonance",
@@ -146,6 +164,7 @@
 			"move": "Quick move",
 			"excite": "Fixed excitation",
 			"speed": "Speed point",
+			"motor": "Motor profile",
 			"other": "CSV file"
 		}
 	},
@@ -221,6 +240,12 @@
 			"blurb": "Works out how the accelerometer is mounted relative to the machine axes and suggests the M955 I parameter so X, Y and Z read in the right directions.",
 			"axisNote": "Pulses X then Y",
 			"run": "One sharp move per horizontal axis · all axes must be homed"
+		},
+		"motor": {
+			"title": "Motor quality",
+			"blurb": "Runs one motor at a range of constant speeds and measures vibration at multiples of its full-step frequency — full-step ripple, coil current imbalance and current-waveform distortion all show up at different orders. Only Z is testable on non-core kinematics, and its low step rate couples poorly to the accelerometer.",
+			"axisNote": "Tests one motor at a time",
+			"run": "Constant-speed passes driving one motor · all axes must be homed"
 		},
 		"excite": {
 			"title": "Excite one frequency",

@@ -148,4 +148,21 @@ describe("Resonance Lab smoke", () => {
 			wrapper.unmount();
 		}
 	});
+
+	// Each task renders only its own params (TaskDef.params) - the motor task needs its own motor
+	// picker (not the plain axis picker every other axis-using task gets) plus its four params.
+	it("selecting the motor task renders its own picker and params, not the plain axis picker", () => {
+		setConnected(true);
+		setModel(loadObjectModel({ boards: [{ shortName: "MB6HC", accelerometer: { points: 0, runs: 0 } }] }));
+		method.value = "motor";
+		const wrapper = mountInDwc(ResonanceLabPage);
+		try {
+			expect(wrapper.text()).toContain("resonanceLab.controls.motor");
+			expect(wrapper.text()).toContain("Length (mm)");
+			expect(wrapper.text()).not.toContain("resonanceLab.controls.axis");
+		} finally {
+			method.value = "sweep";
+			wrapper.unmount();
+		}
+	});
 });
