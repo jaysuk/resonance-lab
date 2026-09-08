@@ -434,7 +434,7 @@ export function useResonanceLab(host: HostAdapter) {
 	}
 
 	const io: MachineIO = {
-		sendCode: async (code) => await host.sendCode(code),
+		sendCode: async (code, quiet) => await host.sendCode(code, quiet),
 		upload: async (path, content) => { await host.upload(path, content); },
 		download: async (path) => await host.download(path),
 		accelRuns: (accelId) => readAccelRuns(accelId),
@@ -607,7 +607,7 @@ export function useResonanceLab(host: HostAdapter) {
 	/** Read the accelerometer's currently-configured M955 orientation from its report (default 20 = identity). */
 	async function readAccelOrientation(accelId: string): Promise<number> {
 		try {
-			const reply = await io.sendCode(`M955 P${accelId}`);
+			const reply = await io.sendCode(`M955 P${accelId}`, true);
 			const m = /orientation[:\s]+(\d+)/i.exec(reply);
 			return m ? parseInt(m[1], 10) : 20;
 		} catch {
@@ -623,7 +623,7 @@ export function useResonanceLab(host: HostAdapter) {
 	 */
 	async function readAccelRate(accelId: string): Promise<number> {
 		try {
-			const reply = await io.sendCode(`M955 P${accelId}`);
+			const reply = await io.sendCode(`M955 P${accelId}`, true);
 			const rate = parseAccelRateFromReport(reply);
 			return rate >= 100 && rate <= 20000 ? rate : 1000;
 		} catch {
@@ -700,7 +700,7 @@ export function useResonanceLab(host: HostAdapter) {
 	const tuneChipUnsupported = computed(() => detectedChip.value !== null && !supportsWaveformCorrection(detectedChip.value.family));
 
 	async function readTuneReg(addr: number): Promise<number | null> {
-		return parseRegisterValue(await io.sendCode(`M569.2 P${tuneDriverId.value} R${addr}`));
+		return parseRegisterValue(await io.sendCode(`M569.2 P${tuneDriverId.value} R${addr}`, true));
 	}
 
 	// The FIRST M569.2 register read after a page load is often stale - RRF returns a cached/empty
@@ -938,7 +938,7 @@ export function useResonanceLab(host: HostAdapter) {
 
 				// PROBE + SNAPSHOT (R1) - before any write. The same reply that confirms the driver actually
 				// accepts this command is also the record of what to restore on cancel/error/Discard.
-				const probeReply = await io.sendCode(`${cmd} P${drv}`);
+				const probeReply = await io.sendCode(`${cmd} P${drv}`, true);
 				if (/^Error/im.test(probeReply) || !/waveform correction/i.test(probeReply)) {
 					error.value = t("motorTune.unsupported");
 					return;

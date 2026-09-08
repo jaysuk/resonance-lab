@@ -35,7 +35,7 @@ export function createHost(): HostAdapter {
 		model: () => machine().model,
 		isConnected: () => machine().isConnected,
 
-		sendCode: async (code) => String(await machine().sendCode(code) ?? ""),
+		sendCode: async (code, quiet) => String(await machine().sendCode(code, false, !quiet) ?? ""),
 		upload: async (path, content) => { await machine().upload({ filename: path, content }, false, false, true); },
 		download: async (path) => String(await machine().download({ filename: path, type: "text" }, false, false, false)),
 		delete: async (path) => { await machine().delete(path); },

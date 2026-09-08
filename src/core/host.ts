@@ -27,8 +27,15 @@ export interface HostAdapter {
 	/** Whether DWC currently has a live connection to the machine. Also a reactive read. */
 	isConnected(): boolean;
 
-	/** Send a G-code line, resolving with the firmware's reply once it has completed. */
-	sendCode(code: string): Promise<string>;
+	/**
+	 * Send a G-code line, resolving with the firmware's reply once it has completed.
+	 * @param quiet Suppress DWC's own toast/console logging of this code and its reply (DWC 3.7's
+	 *  `logReply`, 3.6's `log` - same option, different key name per generation). For a code sent
+	 *  purely to read something back (a register, a status query) rather than as a user action -
+	 *  every M569.2 R/M970.3 P/M955 P bare query this plugin makes - so it doesn't spam the G-code
+	 *  console with noise the user never asked to see (per Christian Hammacher's suggestion).
+	 */
+	sendCode(code: string, quiet?: boolean): Promise<string>;
 	/** Upload text content to a full path (e.g. "0:/sys/resonanceLab/sweep.g"). */
 	upload(path: string, content: string): Promise<void>;
 	/** Download a text file by full path. */

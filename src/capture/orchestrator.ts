@@ -15,8 +15,9 @@ import { generateFixedExcitation, generateSweep, type ShaperState, type SweepOpt
 import { mapAccelerometers } from "./tools";
 
 export interface MachineIO {
-	/** Send a G-code line and resolve when it has completed (DWC sendCode semantics). */
-	sendCode(code: string): Promise<string>;
+	/** Send a G-code line and resolve when it has completed (DWC sendCode semantics). `quiet`
+	 *  suppresses DWC's own toast/console logging - for a code sent purely to read something back. */
+	sendCode(code: string, quiet?: boolean): Promise<string>;
 	/** Upload a text file to the given full path (e.g. "0:/sys/resonanceLab/sweep.g"). */
 	upload(path: string, content: string): Promise<void>;
 	/** Download a text file by full path. */
