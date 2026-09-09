@@ -9,7 +9,9 @@ download the ZIP and install it via **Settings → General → Plugins → Insta
 ## What it does
 
 - **Measure** — run controlled excitation moves and capture accelerometer samples (`M955`/`M956`)
-  per axis / belt, optionally at a specific Z height.
+  per axis / belt, optionally at a specific Z height. On RepRapFirmware **3.7.0-rc.1+**, where only one
+  accelerometer can be active machine-wide, the plugin reactivates the right one before every single
+  measurement automatically — no manual `M955` needed between tools on a tool-changer.
 - **Analyse** — compute power spectral density, find resonance peaks, compare belts, flag anomalies,
   and measure motor quality (vibration at multiples of a motor's own full-step frequency, isolating
   the motor and driver from the machine's structural response).

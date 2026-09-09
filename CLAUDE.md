@@ -110,6 +110,53 @@ first if only the 3.6 build breaks after adding a new shared module.
   expansion-board drivers too (confirmed: the CAN message table for `M970.3` lives in the separate
   `Duet3D/CANlib` repo, not RepRapFirmware itself — a missing `EutProcessM970Point3`-style handler in
   the firmware repo proves nothing, since generic CAN commands are table-driven in CANlib).
+- **Single-accelerometer activation (RRF ≥3.7.0-rc.1, `src/config/accelWiring.ts`,
+  `src/config/firmwareVersion.ts`'s `MIN_ACCEL_FIRMWARE`)** — `81d68e1` collapsed `M955`/`M956` to
+  exactly one active accelerometer machine-wide: `P` must be 0/omitted, `C` (with an optional
+  `<canAddress>.` prefix) is mandatory in `M955`, and **every `M955 C"..."` — local or remote — deletes
+  and recreates the accelerometer object**, resetting orientation to identity unless `I` is resupplied
+  in the *same* command (`I` is now only ever read inside the `gb.Seen('C')` branch — a bare
+  `M955 P<id> I<n>` is a silent no-op on this firmware). Gated on `boards[0].firmwareVersion`, same
+  `firmwareAtLeast` machinery as `motortune` but a **separate** constant (`MIN_ACCEL_FIRMWARE`, not
+  `MIN_TUNE_FIRMWARE`) since the two gate unrelated capabilities that only coincide on this release.
+  Below the gate every code path is byte-identical to pre-`81d68e1` behaviour.
+  - **`useResonanceLab.ts`'s `buildActivationCode` reissues the full `M955 C"..." I<n> Q<freq> R<res>
+    S<rate>` line before *every single measurement*, unconditionally** — never "skip if already
+    active", since nothing tells this plugin whether another actor repointed the active accelerometer
+    since the last capture. `orchestrator.ts`'s six capture functions take this as an optional
+    `activationCode` string and, when present, send it and THEN sample `runsBefore` (never the other
+    way — sampling first would snapshot the about-to-be-deleted object's run counter, and completion
+    detection would silently fall back to file polling on every single capture, forever).
+  - **The `C`/`Q` wiring string appears in no object-model field anywhere** — it only ever exists as
+    the text of an `M955` line in config.g or a tool's own `tpost<N>.g`. `machineConfig.ts`'s
+    `findExistingWiring` checks that tool's `tpost<N>.g` first (cheap — reading costs nothing), then
+    falls back to config.g; the same lookup is shared by activation (every capture) and by saving
+    (below), so the two can never disagree about where the wiring lives. Its file-text cache is
+    invalidated by this plugin's own writes (`applyEditPlan` calls `invalidateGcodeCache`), or a save
+    followed immediately by a re-measurement would silently reapply the pre-save orientation.
+  - **Orientation is this plugin's own state, never config.g's** — config.g's `I` goes stale the
+    instant an orientation is applied at runtime only (true since before this feature existed).
+    Persisted in `state.ts`'s `loadOrientationRegistry`/`saveOrientationEntry` (localStorage key
+    `resonanceLab.accelOrientation`), keyed by **CAN address AND `boards[].uniqueId`** so a physically
+    swapped board can't inherit a stale orientation just because its CAN address was reused; seeded
+    opportunistically from the live object model the first time a board is seen each session.
+  - **Saving always asks where — config.g ("all tools") or that accelerometer's own `tpost<N>.g`
+    ("this tool only") — never inferred from `accel.toolNumber` or any other guess at machine type**
+    (`machineConfig.ts`'s `planAccelSave`, reusing the existing shaper-scope dialog/`ShaperScope`
+    mechanism, gated on `accelItems.length > 1` — **not** `isToolChanger`, which reports whether the
+    tool↔accelerometer *derivation* succeeded and stays false on exactly the multi-accelerometer,
+    mismatched-`M563 D` machines documented above that most need the warning). There is no
+    orientation-only save any more: since reconfiguring resets orientation, the persisted line is
+    always the complete `M955 C"..." I<n>Q<freq>`, replacing the old `planOrientationSave`. The two
+    destinations carry materially different consequences and must never share copy: config.g becomes
+    the boot-time default *regardless of which tool is mounted* (and, if another board's `M955 C` line
+    is already there, silently displaces it — named specifically via a `notes` array, the same
+    cross-file-conflict mechanism `M593`'s tpost saves already use, escalated in severity since this
+    case is destructive rather than merely overridden-on-next-pickup); `tpost<N>.g` reactivates this
+    accelerometer on *every real pickup of that tool for the rest of the machine's life* (a hardware
+    check plus a CAN round-trip for a toolboard), the same per-pickup cost `M593`'s own tpost save
+    already has, just newly expensive here. `R`/`S` are deliberately never persisted — they're a
+    capture's own session sampling settings, not durable machine config.
 - **Analysis core** (`src/analysis/`, pure TS, fully unit-tested, zero Vue/store deps): `fft.ts`,
   `spectrum.ts` (Welch PSD), `shapers.ts` (RRF's MZV/ZVD/ZVDD/ZVDDD/EI2/EI3 per `AxisShaper.cpp`),
   `recommend.ts` (the tuning engine — `findBestShaper` single-axis, `findBestShaperCombined`
@@ -179,7 +226,7 @@ first if only the 3.6 build breaks after adding a new shared module.
 - **`M955`'s `I` orientation parameter is a string, not a number** (RRF concatenates two face-index
   digits, e.g. `"06"` — `src/analysis/axesMap.ts`'s `iParam: string | null`). A leading zero is
   significant; round-tripping it through `Number()` would silently corrupt it. `gcodeEdit.ts` and
-  `machineConfig.ts`'s `planOrientationSave` treat it as an opaque string throughout for this reason.
+  `machineConfig.ts`'s `planAccelSave` treat it as an opaque string throughout for this reason.
 - **`M955` carries hardware wiring alongside orientation** — `P` (id), `C` (SPI CS pins), `Q` (SPI
   frequency), `I` (orientation) — confirmed in `Accelerometers.cpp`. Saving an orientation to
   config.g therefore edits only the `I` token in place (`gcodeEdit.ts`'s `setParam`, which masks

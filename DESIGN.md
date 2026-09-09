@@ -48,6 +48,42 @@ ecosystems or their tools are referenced in code, comments, or documentation.
    reading its IOIN register over `M569.2 R` (see `driverChip.ts`), since the object model carries
    no chip-type field.
 
+## Single-accelerometer activation (RRF ≥3.7.0-rc.1)
+
+RepRapFirmware 3.7.0-rc.1 changed `M955`/`M956` so that only **one** accelerometer can be active
+machine-wide at a time, addressed by a `C` wiring string (with an optional CAN-address prefix) rather
+than a board-driver `P`. Reconfiguring one — `M955 C"..."` — deletes and recreates the accelerometer
+object, which resets its orientation to identity unless `I` is resupplied in the *same* command. This
+matters a great deal for a tool-changer with a per-tool accelerometer, which previously just relied on
+every board's accelerometer staying independently configured forever.
+
+The plugin's answer has three parts, each solving a piece the object model can't:
+
+- **Reactivation is unconditional and per-measurement.** Before every single capture (never "only when
+  switching accelerometers"), the plugin sends a full `M955 C"..." I<n> Q<freq> R<res> S<rate>` line.
+  Nothing in the object model says whether some other actor repointed the active accelerometer since
+  the plugin's last capture, so the only safe assumption is none at all. The cost is one reconfigure
+  per measurement (a CAN round trip plus a hardware probe for a toolboard); the alternative is
+  measurement data silently mislabelled as coming from the wrong accelerometer.
+- **Wiring (`C`/`Q`) is read from wherever it's actually written** — config.g, or (checked first) the
+  measured accelerometer's own tool-change macro — since the object model carries no field for it at
+  all; it only ever exists as literal G-code text. This is a read-only concern until the user chooses
+  to persist a *new* association, at which point they explicitly pick the destination (see below);
+  reading never writes anything the user didn't ask for.
+- **Orientation is the plugin's own state**, not config.g's — the moment an orientation is applied at
+  runtime (the same "apply now, save later" split that already existed before this firmware change),
+  config.g's copy is stale. A `localStorage` registry, keyed by CAN address *and* the board's own
+  `uniqueId` (so a physically swapped board can't inherit a stale value through a reused address), is
+  what's actually resupplied on every reactivation.
+
+Saving a wiring+orientation association so it survives a reboot always presents an explicit
+config.g-vs-tool choice — deliberately never inferred from whether the accelerometer happens to be
+tied to a known tool, since RRF's exclusive (not coexisting) single-active-accelerometer semantics
+make the wrong guess here a correctness problem, not just an inconvenience. This reuses the same
+scope-choice mechanism the shaper (`M593`) save already has, but with independently-written copy: an
+`M593` "all tools" default coexists peacefully with any per-tool override, where an `M955` "all tools"
+save is the *only* thing keeping any other accelerometer active at all.
+
 ## Analysis core (`src/analysis/`, pure TS, no Vue, fully unit-tested)
 
 - `fft.ts` — radix-2 FFT.
