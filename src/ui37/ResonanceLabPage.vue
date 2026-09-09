@@ -71,27 +71,39 @@
 			</v-card>
 		</v-dialog>
 
-		<!-- Shaper config.g save: which tool(s) should this apply to? RRF's M593 is machine-wide, so
-			 "this tool only" means re-asserting it from that tool's own tpost<N>.g on every pickup. -->
+		<!-- Save scope: which tool(s) should this apply to? Shared by two directives with materially
+			 different consequences (R9): M593 is machine-wide with a coexisting default+override, so
+			 "this tool only" just re-asserts it from that tool's tpost<N>.g on every pickup. M955 supports
+			 only ONE active accelerometer machine-wide, so "all tools" here means "boot-time default,
+			 and the only thing keeping any other accelerometer active" - never reuse M593's copy for it. -->
 		<v-dialog v-model="shaperScopeDialogOpen" max-width="480">
-			<v-card v-if="pendingShaperFit">
+			<v-card v-if="pendingShaperFit || pendingAccelSave">
 				<v-card-title class="d-flex align-center">
 					<v-icon class="me-2">mdi-content-save-outline</v-icon>
-					{{ $t("plugins.resonanceLab.config.scopeTitle", { shaper: displayName(pendingShaperFit.name), freq: pendingShaperFit.freq.toFixed(1) }) }}
+					<template v-if="pendingSaveKind === 'M955'">{{ $t("plugins.resonanceLab.config.accelScopeTitle") }}</template>
+					<template v-else-if="pendingShaperFit">{{ $t("plugins.resonanceLab.config.scopeTitle", { shaper: displayName(pendingShaperFit.name), freq: pendingShaperFit.freq.toFixed(1) }) }}</template>
 				</v-card-title>
 				<v-card-text>
-					<div class="text-body-2 text-medium-emphasis mb-3">{{ $t("plugins.resonanceLab.config.scopeBody") }}</div>
+					<div class="text-body-2 text-medium-emphasis mb-3">
+						{{ pendingSaveKind === "M955" ? $t("plugins.resonanceLab.config.accelScopeBody") : $t("plugins.resonanceLab.config.scopeBody") }}
+					</div>
 					<div class="mb-3">
 						<v-btn block color="primary" variant="outlined" @click="chooseShaperScope('all')">
 							{{ $t("plugins.resonanceLab.config.scopeAll") }}
 						</v-btn>
-						<div class="text-caption text-medium-emphasis mt-1">{{ $t("plugins.resonanceLab.config.scopeAllHint") }}</div>
+						<div class="text-caption text-medium-emphasis mt-1">
+							{{ pendingSaveKind === "M955" ? $t("plugins.resonanceLab.config.accelScopeAllHint") : $t("plugins.resonanceLab.config.scopeAllHint") }}
+						</div>
 					</div>
-					<div v-if="activeTool >= 0">
+					<div v-if="scopeDialogHasTool">
 						<v-btn block color="primary" variant="outlined" @click="chooseShaperScope('tool')">
-							{{ $t("plugins.resonanceLab.config.scopeTool", { tool: activeToolLabel }) }}
+							{{ $t("plugins.resonanceLab.config.scopeTool", { tool: scopeDialogToolLabel }) }}
 						</v-btn>
-						<div class="text-caption text-medium-emphasis mt-1">{{ $t("plugins.resonanceLab.config.scopeToolHint", { tool: activeToolLabel }) }}</div>
+						<div class="text-caption text-medium-emphasis mt-1">
+							{{ pendingSaveKind === "M955"
+								? $t("plugins.resonanceLab.config.accelScopeToolHint", { tool: scopeDialogToolLabel })
+								: $t("plugins.resonanceLab.config.scopeToolHint", { tool: scopeDialogToolLabel }) }}
+						</div>
 					</div>
 				</v-card-text>
 				<v-card-actions>
@@ -213,11 +225,20 @@
 				<!-- Parameters: only the controls this task actually uses -->
 				<v-sheet v-if="isConnected && accelItems.length > 0" border rounded class="pa-3 mb-3">
 					<div class="d-flex flex-wrap align-center ga-3">
-						<v-select v-if="accelItems.length > 1" v-model="selectedAccel" :items="accelItems" item-title="label" return-object
-								  density="compact" variant="outlined" hide-details style="min-width: 220px"
-								  :label="$t('plugins.resonanceLab.controls.accelerometer')" :disabled="running" />
-						<div v-else-if="selectedAccel" class="text-body-2">
+						<v-select v-if="accelItems.length > 1" v-model="selectedAccel" :items="accelItemsForPicker" item-title="label"
+								  item-disabled="wiringMissing" return-object density="compact" variant="outlined" hide-details style="min-width: 220px"
+								  :label="$t('plugins.resonanceLab.controls.accelerometer')" :disabled="running">
+							<template #item="{ item, props: itemProps }">
+								<v-list-item v-bind="itemProps">
+									<template v-if="item.wiringMissing" #append>
+										<HelpTip :text="$t('plugins.resonanceLab.accel.wiringMissing')" />
+									</template>
+								</v-list-item>
+							</template>
+						</v-select>
+						<div v-else-if="selectedAccel" class="text-body-2 d-flex align-center ga-1">
 							<span class="text-medium-emphasis">{{ $t("plugins.resonanceLab.controls.accelerometer") }}:</span> {{ selectedAccel.label }}
+							<HelpTip v-if="selectedAccelWiringMissing" :text="$t('plugins.resonanceLab.accel.wiringMissing')" />
 						</div>
 						<v-select v-if="method === 'sweep'" v-model="selectedAxes" :items="axisItems" multiple chips closable-chips
 								  density="compact" variant="outlined" hide-details style="min-width: 170px"
@@ -654,6 +675,8 @@ const {
 	beltPhase,
 	beltEstablishingTiming,
 	accelItems,
+	accelItemsForPicker,
+	selectedAccelWiringMissing,
 	selectedAccel,
 	axisItems,
 	motorItems,
@@ -723,6 +746,10 @@ const {
 	applyShaper,
 	shaperScopeDialogOpen,
 	pendingShaperFit,
+	pendingAccelSave,
+	pendingSaveKind,
+	scopeDialogHasTool,
+	scopeDialogToolLabel,
 	configDialogOpen,
 	configDialogBusy,
 	configDialogError,
@@ -732,8 +759,6 @@ const {
 	configNeedsRestart,
 	configCode,
 	configFileName,
-	activeTool,
-	activeToolLabel,
 	saveOrientationToConfig,
 	saveShaperFit,
 	saveShaper,

@@ -132,6 +132,70 @@ export const profileResult = sessionField("profileResult");
 export const motorResult = sessionField("motorResult");
 export const motorTuneResult = sessionField("motorTuneResult");
 
+// ── Accelerometer orientation registry (RRF >= 3.7.0-rc.1) ─────────────────────────────────────
+// New-scheme M955 only ever has one board's wiring active machine-wide, and reconfiguring an
+// accelerometer (M955 C"...") resets its orientation to identity unless resupplied in the SAME
+// command. config.g's own I value goes stale the instant `applyOrientation` runs at runtime only (the
+// existing, pre-3.7.0-rc.1 behaviour), so it can't be trusted as the source of truth for reactivating
+// an accelerometer later. This registry is resonance-lab's own record instead: localStorage (survives
+// a reload; a per-tab session was rejected as "forgotten on reload"), keyed by CAN address AND board
+// uniqueId so a physically swapped board can't inherit a stale orientation just because its CAN
+// address was reused.
+export interface AccelOrientationEntry {
+	canAddress: number;
+	/** boards[N].uniqueId at the time this was recorded - a board swap invalidates the entry even if
+	 *  canAddress is reused. Null when the firmware doesn't report one; falls back to canAddress alone. */
+	uniqueId: string | null;
+	orientation: number;
+	resolution?: number;
+	samplingRate?: number;
+}
+
+const LS_ACCEL_ORIENTATION = "resonanceLab.accelOrientation";
+
+/** All recorded entries. Never throws - an empty array on disabled/corrupted storage is the correct
+ *  "nothing recorded yet" state, not a distinguishable error. */
+export function loadOrientationRegistry(): Array<AccelOrientationEntry> {
+	try {
+		const raw = localStorage.getItem(LS_ACCEL_ORIENTATION);
+		if (!raw) {
+			return [];
+		}
+		const parsed: unknown = JSON.parse(raw);
+		return Array.isArray(parsed) ? (parsed as Array<AccelOrientationEntry>) : [];
+	} catch {
+		return [];
+	}
+}
+
+/** Upsert by canAddress - a board only ever has one recorded entry, matching the firmware's own
+ *  single-active-accelerometer constraint. Silently no-ops if storage is unavailable; the caller
+ *  already has the value in memory for the rest of this session either way. */
+export function saveOrientationEntry(entry: AccelOrientationEntry): void {
+	try {
+		const registry = loadOrientationRegistry().filter((e) => e.canAddress !== entry.canAddress);
+		registry.push(entry);
+		localStorage.setItem(LS_ACCEL_ORIENTATION, JSON.stringify(registry));
+	} catch {
+		// storage disabled - nothing more to do
+	}
+}
+
+/** Matches on canAddress AND (when both sides have one) uniqueId - a uniqueId mismatch (the board was
+ *  swapped) returns null rather than a stale value, even though canAddress alone still matches. */
+export function findOrientationEntry(
+	registry: Array<AccelOrientationEntry>, canAddress: number, uniqueId: string | null,
+): AccelOrientationEntry | null {
+	const entry = registry.find((e) => e.canAddress === canAddress);
+	if (!entry) {
+		return null;
+	}
+	if (entry.uniqueId && uniqueId && entry.uniqueId !== uniqueId) {
+		return null;
+	}
+	return entry;
+}
+
 export const measurementRunning = ref(false);
 
 // View selection lives here too, so returning to the plugin restores the same task + axes (and the

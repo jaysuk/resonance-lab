@@ -9,6 +9,14 @@
  * unparseable version and a fail-closed gate hides the feature from exactly the hardware it targets.
  */
 
+/**
+ * Minimum firmware for RRF's single-accelerometer M955/M956 scheme (P capped at 0, C mandatory and
+ * CAN-address-prefixed, exactly one accelerometer active machine-wide). A separate constant from any
+ * other feature's own minimum (e.g. motortune's) even where they coincide today - they gate unrelated
+ * firmware capabilities that only happen to share a threshold on this release.
+ */
+export const MIN_ACCEL_FIRMWARE = "3.7.0-rc.1";
+
 export interface ParsedVersion {
 	major: number;
 	minor: number;

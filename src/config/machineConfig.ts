@@ -5,10 +5,13 @@
  * without a printer. Nothing here writes anything without the caller explicitly calling
  * `applyEditPlan` on a plan it has shown the user - `plan*` functions are pure previews.
  */
+import type { AccelerometerRef } from "../capture/orchestrator";
 import type { HostAdapter } from "../core/host";
+import { findAccelWiring, findOtherAccelWiring, parseCPrefix, type AccelWiring } from "./accelWiring";
+import { firmwareAtLeast, MIN_ACCEL_FIRMWARE } from "./firmwareVersion";
 import {
 	appendDirective, detectEol, diffLines, findDirectives, parseLines, replaceDirective, replaceLine,
-	serializeLines, setParam, type DiffLine,
+	serializeLines, setParam, type DiffLine, type GcodeLine,
 } from "./gcodeEdit";
 
 /** Same-day, sortable audit stamp for a "; Resonance Lab <date>" comment above an appended directive. */
@@ -83,12 +86,16 @@ function buildPlan(
 	path: string,
 	beforeText: string,
 	code: string,
-	matchParams: Record<string, string>,
+	match: Record<string, string> | ((line: GcodeLine) => boolean),
 	editLine: (raw: string) => string,
 	newDirectiveLine: string,
 ): DirectiveEditPlan {
 	const before = parseLines(beforeText);
-	const matches = findDirectives(before, code, matchParams);
+	// A predicate can't be handed to findDirectives (it only compares exact param values), so it
+	// fetches every line of this directive unfiltered and the predicate does its own filtering here -
+	// gcodeEdit.ts stays untouched, its own exports/tests unaffected.
+	const all = findDirectives(before, code, typeof match === "function" ? {} : match);
+	const matches = typeof match === "function" ? all.filter((m) => match(m.line)) : all;
 	const active = matches.find((m) => !m.line.disabled);
 	const disabledDuplicateFound = matches.some((m) => m.line.disabled);
 
@@ -111,21 +118,59 @@ function buildPlan(
 	};
 }
 
+// ── Accelerometer wiring cache (RRF >= 3.7.0-rc.1) ──────────────────────────────────────────────
+// `findExistingWiring` runs before every capture (useResonanceLab.ts's buildActivationCode, per R2 -
+// unconditionally, every measurement) as well as before every save below, so re-downloading config.g
+// / tpost<N>.g on every call would add a file transfer per measurement. Cached per file path;
+// invalidated by this module's own writes (see applyEditPlan) so a save is reflected immediately in
+// the very next capture's activation line, not just after a reload.
+const cachedGcodeText = new Map<string, string>();
+
+/** Drop one cached file's text (or everything, with no argument) so the next read is fresh. */
+export function invalidateGcodeCache(path?: string): void {
+	if (path) {
+		cachedGcodeText.delete(path);
+	} else {
+		cachedGcodeText.clear();
+	}
+}
+
+async function getGcodeText(path: string, read: () => Promise<string>): Promise<string> {
+	if (!cachedGcodeText.has(path)) {
+		cachedGcodeText.set(path, await read());
+	}
+	return cachedGcodeText.get(path)!;
+}
+
 /**
- * Preview setting an accelerometer's M955 orientation (I) in config.g, editing just that one
- * parameter (preserving `C`/`Q` wiring config) or appending a new M955 line if none exists yet.
- *
- * `orientation` is a string (RRF's own two-digit-per-axis-pair code, e.g. "206"), not a number -
- * it's built by concatenating digits, and a leading zero (e.g. "06") is significant.
+ * Same threshold and same field (`boards[0].firmwareVersion`) as useResonanceLab.ts's own
+ * `usesNewAccelScheme` reactive computed - re-derived here, under a deliberately different name,
+ * because this module takes `host` as a plain argument rather than a live store binding, so the two
+ * are never confused for the same binding.
  */
-export async function planOrientationSave(host: HostAdapter, accelId: string, orientation: string): Promise<DirectiveEditPlan> {
-	const path = configPath(host);
-	const text = await readConfig(host);
-	return buildPlan(
-		path, text, "M955", { P: accelId },
-		(raw) => setParam(raw, "I", orientation),
-		`M955 P${accelId} I${orientation}`,
-	);
+function firmwareUsesNewAccelScheme(host: HostAdapter): boolean {
+	const main = (host.model() as { boards?: Array<{ firmwareVersion?: string } | null> } | null)
+		?.boards?.[0]?.firmwareVersion ?? null;
+	return firmwareAtLeast(main, MIN_ACCEL_FIRMWARE);
+}
+
+/**
+ * Where `accel`'s C/Q wiring is currently recorded - checks that tool's own `tpost<N>.g` first (R8's
+ * read-side counterpart: reading a per-tool line someone already saved costs nothing, only WRITING
+ * one automatically is gated), then falls back to config.g. Shared by useResonanceLab.ts's
+ * `buildActivationCode` and `planAccelSave` below, so there is exactly one definition of "where do we
+ * trust this accelerometer's wiring to be" - a second copy risks a save and a capture disagreeing.
+ */
+export async function findExistingWiring(host: HostAdapter, accel: AccelerometerRef): Promise<AccelWiring | null> {
+	const canAddress = parseInt(accel.id, 10) || 0;
+	const tool = accel.toolNumber;
+	if (tool !== undefined && tool >= 0) {
+		const hit = findAccelWiring(await getGcodeText(tpostPath(host, tool), () => readTpostOrEmpty(host, tool)), canAddress);
+		if (hit) {
+			return hit;
+		}
+	}
+	return findAccelWiring(await getGcodeText(configPath(host), () => readConfig(host)), canAddress);
 }
 
 export type ShaperScope = "all" | "tool";
@@ -175,6 +220,90 @@ export async function planShaperSave(
 	return { plan, notes };
 }
 
+/** Matches an M955 line belonging to ONE board, by its C prefix. Used for both destinations below - a
+ *  tpost<N>.g can legitimately carry another board's M955 too, so neither branch may match "any M955". */
+function accelLineForBoard(canAddress: number): (line: GcodeLine) => boolean {
+	return (line) => {
+		const c = line.params.C;
+		return c !== undefined && parseCPrefix(c.replace(/^"|"$/g, "")) === canAddress;
+	};
+}
+
+/**
+ * Preview persisting an accelerometer's orientation - and, on new-scheme firmware, its wiring too -
+ * so it survives a reboot. There is no orientation-only save once R1 applies: reconfiguring an
+ * accelerometer (M955 C"...") resets orientation unless resupplied in the SAME command, so the
+ * persisted line is always the complete `M955 C"..." I<n>`, and where it goes (config.g machine-wide,
+ * vs. one tool's own `tpost<N>.g`) is always the caller's explicit choice - see R9, never inferred
+ * from whether `accel.toolNumber` happens to be set.
+ *
+ * `orientation` is a string (RRF's own two-digit-per-axis-pair code, e.g. "206"), not a number - it's
+ * built by concatenating digits, and a leading zero (e.g. "06") is significant.
+ */
+export async function planAccelSave(
+	host: HostAdapter, accel: AccelerometerRef, scope: ShaperScope, orientation: string,
+): Promise<ShaperSaveResult> {
+	const canAddress = parseInt(accel.id, 10) || 0; // "121.0" -> 121, "0" -> 0
+	const notes: Array<string> = [];
+
+	if (!firmwareUsesNewAccelScheme(host)) {
+		const path = configPath(host);
+		const text = await readConfig(host);
+		const plan = buildPlan(
+			path, text, "M955", { P: accel.id },
+			(raw) => setParam(raw, "I", orientation), `M955 P${accel.id} I${orientation}`,
+		);
+		return { plan, notes }; // legacy: unchanged: scope is meaningless pre-3.7.0-rc.1
+	}
+
+	// Wherever this accelerometer's wiring currently lives (tpost first, else config.g) is what we
+	// need C/Q from, REGARDLESS of where the user is choosing to SAVE to now - "scope" answers "where
+	// should this become the boot-time state", not "where is the wiring recorded".
+	const wiring = await findExistingWiring(host, accel);
+	if (!wiring) {
+		throw new Error("This accelerometer's wiring isn't recorded anywhere yet - run the orientation task with it active first.");
+	}
+
+	// R/S deliberately omitted: they're the CURRENT session's sampling settings, which each capture
+	// sets for itself in its own activation line. Persisting them would freeze one task's rate into
+	// config.g as a machine default. C + I + Q is the durable wiring+orientation; nothing else.
+	const newLine = `M955 C"${wiring.cSpec}" I${orientation}${wiring.spiFrequency ? ` Q${wiring.spiFrequency}` : ""}`;
+	const configText = await readConfig(host);
+	const isThisBoard = accelLineForBoard(canAddress);
+
+	if (scope === "all") {
+		const configHasOther = findOtherAccelWiring(configText, canAddress);
+		if (configHasOther) {
+			notes.push(
+				`config.g already makes board ${configHasOther.canAddress}'s accelerometer the boot-time default - `
+				+ `saving here replaces it. Board ${configHasOther.canAddress}'s accelerometer will need `
+				+ "reactivating (by resonance-lab, or its own tpost) before it's usable again.",
+			);
+		}
+		const plan = buildPlan(configPath(host), configText, "M955", isThisBoard, (raw) => setParam(raw, "I", orientation), newLine);
+		return { plan, notes };
+	}
+
+	// scope === "tool". Guard exactly as planShaperSave does above - `accel.toolNumber` is optional
+	// and activeTool's own "no tool" sentinel is -1, so skipping this would risk writing
+	// tpostundefined.g / tpost-1.g, the same failure the shaper dialog already shipped once.
+	const toolNumber = accel.toolNumber;
+	if (toolNumber === undefined || toolNumber < 0) {
+		throw new Error("This accelerometer isn't associated with a tool, so it has no tpost file to save into.");
+	}
+	const tpostText = await readTpostOrEmpty(host, toolNumber);
+	if (findAccelWiring(configText, canAddress)) {
+		notes.push(
+			"config.g also configures this accelerometer's wiring - that copy is now unused whenever this tool is "
+			+ "picked up, but still applies if a resonance-lab measurement targets it without a tool change happening first.",
+		);
+	}
+	// isThisBoard, NOT an unconditional match: tpost<N>.g may already carry an unrelated board's
+	// M955, and matching that one would rewrite ANOTHER accelerometer's orientation.
+	const plan = buildPlan(tpostPath(host, toolNumber), tpostText, "M955", isThisBoard, (raw) => setParam(raw, "I", orientation), newLine);
+	return { plan, notes };
+}
+
 /** Back up the original file, then write the edited one. No-op if the plan turned out to change
  *  nothing (e.g. re-saving the same orientation twice). Throws (without writing) for a `blocked` plan
  *  - callers should already have refused to offer this, this is a defensive last check. */
@@ -187,6 +316,9 @@ export async function applyEditPlan(host: HostAdapter, plan: DirectiveEditPlan):
 	}
 	await host.upload(backupPath(plan.path), plan.before);
 	await host.upload(plan.path, plan.after);
+	// This plugin's own writes must be visible to the NEXT accelerometer-wiring lookup - without this,
+	// a user who fixes an orientation and immediately re-measures gets the pre-save text reapplied.
+	invalidateGcodeCache(plan.path);
 }
 
 /** RRF re-reads config.g only on M999 (full restart) or an explicit re-run - mirrors DWC's own

@@ -223,6 +223,103 @@ describe("capture robustness (live-printer findings)", () => {
 		expect(run.runsBefore).toBe(3);
 	});
 
+	// M955 C"..." (RRF >= 3.7.0-rc.1) deletes and recreates the accelerometer object, resetting its
+	// run counter - sampling runsBefore before sending the activation line would snapshot the wrong
+	// (about-to-be-deleted) object's count and downloadCapture would then wait forever. These tests
+	// assert the ORDER, not just that both things eventually happen.
+	describe("activationCode ordering (RRF >= 3.7.0-rc.1)", () => {
+		it("runSweepCapture sends the activation line, THEN samples the run counter, THEN arms with P omitted", async () => {
+			const { runSweepCapture } = await import("../src/capture/orchestrator");
+			const order: Array<string> = [];
+			const io = {
+				sendCode: async (code: string) => { order.push(`send:${code}`); return "ok"; },
+				upload: async () => {},
+				download: async () => "",
+				accelRuns: () => { order.push("accelRuns"); return 3; },
+			};
+			const run = await runSweepCapture(io, {
+				accelerometer: { id: "121.0", label: "T0" }, axis: "X", center: 100, startFreq: 5, endFreq: 10,
+				activationCode: 'M955 C"121.i2c.lis" I6',
+			});
+			expect(order[0]).toBe('send:M955 C"121.i2c.lis" I6');
+			expect(order[1]).toBe("accelRuns"); // sampled AFTER activation, not before
+			expect(run.runsBefore).toBe(3);
+			expect(order[2]).toContain("M956 S"); // P omitted entirely
+			expect(order[2]).not.toContain("P121.0");
+		});
+
+		it("runSweepCapture behaves exactly as before when activationCode is absent (legacy firmware)", async () => {
+			const { runSweepCapture } = await import("../src/capture/orchestrator");
+			const order: Array<string> = [];
+			const io = {
+				sendCode: async (code: string) => { order.push(code); return "ok"; },
+				upload: async () => {},
+				download: async () => "",
+				accelRuns: () => 3,
+			};
+			await runSweepCapture(io, { accelerometer: { id: "0", label: "MB" }, axis: "X", center: 100, startFreq: 5, endFreq: 10 });
+			expect(order).toHaveLength(1); // only the M400 M956... arm line - no separate activation send
+			expect(order[0]).toContain("M956 P0");
+		});
+
+		it("runFixedExcitation: same ordering and P-omission", async () => {
+			const { runFixedExcitation } = await import("../src/capture/orchestrator");
+			const order: Array<string> = [];
+			const io = {
+				sendCode: async (code: string) => { order.push(`send:${code}`); return "ok"; },
+				upload: async () => {},
+				download: async () => "",
+				accelRuns: () => { order.push("accelRuns"); return 0; },
+			};
+			await runFixedExcitation(io, {
+				accelerometer: { id: "121.0", label: "T0" }, axis: "X", center: 100, freq: 60,
+				activationCode: 'M955 C"121.i2c.lis" I6',
+			});
+			expect(order[0]).toBe('send:M955 C"121.i2c.lis" I6');
+			expect(order[1]).toBe("accelRuns");
+			expect(order[2]).not.toContain("P121.0");
+		});
+
+		it("runNativeCapture: activates after the positioning move but before sampling runsBefore", async () => {
+			const { runNativeCapture } = await import("../src/capture/orchestrator");
+			const order: Array<string> = [];
+			const io = {
+				sendCode: async (code: string) => { order.push(`send:${code}`); return "ok"; },
+				upload: async () => {},
+				download: async () => "",
+				accelRuns: () => { order.push("accelRuns"); return 0; },
+			};
+			await runNativeCapture(io, {
+				accelerometer: { id: "121.0", label: "T0" }, axis: "X", center: 100,
+				activationCode: 'M955 C"121.i2c.lis" I6',
+			});
+			expect(order[0]).toContain("G1 X"); // positioning move first
+			expect(order[1]).toBe('send:M955 C"121.i2c.lis" I6');
+			expect(order[2]).toBe("accelRuns");
+			expect(order[3]).not.toContain("P121.0");
+		});
+
+		it("runBeltCapture: activates ONCE above the sized/self-sizing branch, before sampling runsBefore", async () => {
+			const { runBeltCapture } = await import("../src/capture/orchestrator");
+			const order: Array<string> = [];
+			const io = {
+				sendCode: async (code: string) => { order.push(`send:${code}`); return "ok"; },
+				upload: async () => {},
+				download: async () => "",
+				accelRuns: () => { order.push("accelRuns"); return 0; },
+			};
+			const beltOpts = {
+				accelerometer: { id: "121.0", label: "T0" }, belt: "a" as const, centerX: 100, centerY: 100,
+				startFreq: 15, endFreq: 95, hzPerSec: 2, activationCode: 'M955 C"121.i2c.lis" I6',
+			};
+			await runBeltCapture(io, { ...beltOpts, samples: 1234 });
+			const activationCalls = order.filter((o) => o.includes("M955"));
+			expect(activationCalls).toHaveLength(1); // sent exactly once, not per-branch
+			expect(order.indexOf(activationCalls[0])).toBeLessThan(order.indexOf("accelRuns"));
+			expect(order[order.length - 1]).not.toContain("P121.0");
+		});
+	});
+
 	it("downloadCapture waits on the run counter when the IO exposes it (no file polling)", async () => {
 		const { downloadCapture } = await import("../src/capture/orchestrator");
 		const full = "Sample,X\n0,0.1\nRate 1000, overflows 0";

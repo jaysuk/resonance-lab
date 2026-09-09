@@ -5,6 +5,9 @@
 	"accelMissing": "No accelerometer found in the object model. Configure one with M955 to run measurements.",
 	"overflows": "The accelerometer reported {count} sample overflow(s) — results may be unreliable. Try a lower sample rate (M955) or a shorter run.",
 	"notHomed": "Home all axes before measuring — the test shakes the machine and needs a known position.",
+	"accel": {
+		"wiringMissing": "This accelerometer's wiring isn't recorded anywhere yet — run the orientation task with it active, then save it, to make it selectable here."
+	},
 	"emptyState": "No measurement yet",
 	"emptyHint": "Set the options above and press Measure — or load a previous capture CSV.",
 	"controls": {
@@ -54,7 +57,8 @@
 		"coupling": "High cross-axis coupling ({pct}%) — check the accelerometer is rigidly mounted.",
 		"apply": "Apply M955",
 		"applied": "Orientation applied (I{i}). Add the M955 I parameter to config.g to keep it.",
-		"save": "Save to config.g"
+		"save": "Save to config.g",
+		"wiringMissing": "This accelerometer's wiring isn't recorded anywhere yet — run this check with it active, then save it, before measuring or applying an orientation."
 	},
 	"belts": {
 		"notCoreXY": "Belt comparison needs CoreXY-style kinematics (diagonal belt paths). Your machine reports a different kinematics type.",
@@ -132,6 +136,10 @@
 		"scopeAllHint": "Writes the machine-wide M593 into config.g.",
 		"scopeTool": "{tool} only",
 		"scopeToolHint": "Writes M593 into {tool}'s own tool-change macro, re-sent every time it's picked up.",
+		"accelScopeTitle": "Save this accelerometer's orientation",
+		"accelScopeBody": "RRF supports only one active accelerometer at a time — choose whether this becomes the boot-time default regardless of which tool is mounted, or is only reactivated each time this tool is picked up.",
+		"accelScopeAllHint": "Makes this the accelerometer RRF activates at startup, regardless of which tool is mounted. This is not \"usable by every tool\" — it's the boot-time default, and the only thing keeping any other accelerometer active.",
+		"accelScopeToolHint": "Reactivates this accelerometer every time {tool} is physically picked up — a hardware check, plus a CAN round-trip for a toolboard — for the rest of this machine's life, whether or not you're testing that day.",
 		"cancel": "Cancel",
 		"save": "Save",
 		"backupNote": "The original file is backed up alongside it before anything is written.",

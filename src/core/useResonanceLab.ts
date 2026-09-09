@@ -44,15 +44,15 @@ import {
 import { shaperRestoreGcode, type ShaperState } from "../capture/sweep";
 import { accelForTool } from "../capture/tools";
 import {
-	applyEditPlan, configPath, planOrientationSave, planShaperSave, restartAfterConfigEdit,
+	applyEditPlan, configPath, findExistingWiring, planAccelSave, planShaperSave, restartAfterConfigEdit,
 	type DirectiveEditPlan, type ShaperScope,
 } from "../config/machineConfig";
 import { chipFromIoin, type DriverChip, IOIN_ADDRESSES, parseRegisterValue, supportsWaveformCorrection } from "../config/driverChip";
-import { firmwareAtLeast } from "../config/firmwareVersion";
+import { firmwareAtLeast, MIN_ACCEL_FIRMWARE } from "../config/firmwareVersion";
 import {
-	activeTool, beltResult, combinedRec, lastResult, measurementRunning, method, motorResult, motorTuneResult,
-	multiResults, orientationResult, profileResult, selectedAxes, selectedAxis, selectedMotor,
-	type CaptureMethod, type MultiAxisResult,
+	activeTool, beltResult, combinedRec, findOrientationEntry, lastResult, loadOrientationRegistry,
+	measurementRunning, method, motorResult, motorTuneResult, multiResults, orientationResult, profileResult,
+	saveOrientationEntry, selectedAxes, selectedAxis, selectedMotor, type CaptureMethod, type MultiAxisResult,
 } from "../state";
 // Only the pieces the logic itself drives. The rest of the update surface (updateState,
 // pendingReload, the apply/check actions) is module-level reactive state the templates import
@@ -445,6 +445,120 @@ export function useResonanceLab(host: HostAdapter) {
 		makeDirectory: async (path) => { await host.makeDirectory(path); },
 	};
 
+	// ── Single-accelerometer activation (RRF >= 3.7.0-rc.1) ───────────────────────
+	// M955/M956 collapsed to exactly one accelerometer active machine-wide, addressed via C rather
+	// than P, with reconfiguring one (M955 C"...") deleting and recreating the accelerometer object -
+	// which resets its orientation to identity unless resupplied in the SAME command. See
+	// src/config/firmwareVersion.ts's MIN_ACCEL_FIRMWARE for the exact threshold this reuses (a
+	// separate constant from motortune's own gate, even though both happen to be "3.7.0-rc.1" today).
+	function mainboardFirmware(): string | null {
+		return (host.model() as { boards?: Array<{ firmwareVersion?: string } | null> }).boards?.[0]?.firmwareVersion ?? null;
+	}
+	const usesNewAccelScheme = computed(() => firmwareAtLeast(mainboardFirmware(), MIN_ACCEL_FIRMWARE));
+
+	/** Live OM lookup for a board's CURRENT orientation/resolution/rate - used to seed the orientation
+	 *  registry the first time a board is seen this session (the OM is always current; config.g/tpost
+	 *  text goes stale the instant an orientation is applied at runtime only). */
+	function liveAccelState(canAddress: number): { orientation: number; resolution: number; samplingRate: number; uniqueId: string | null } | null {
+		const boards = (host.model() as { boards?: Array<{
+			canAddress?: number | null; uniqueId?: string | null;
+			accelerometer?: { orientation?: number; resolution?: number; samplingRate?: number } | null;
+		} | null> }).boards ?? [];
+		const board = boards.find((b) => b && (b.canAddress ?? 0) === canAddress);
+		if (!board?.accelerometer) {
+			return null;
+		}
+		return {
+			orientation: board.accelerometer.orientation ?? 20, resolution: board.accelerometer.resolution ?? 10,
+			samplingRate: board.accelerometer.samplingRate ?? 1000, uniqueId: board.uniqueId ?? null,
+		};
+	}
+
+	/** Build a full M955 C"..." I<n> line using an EXPLICIT orientation, bypassing the orientation
+	 *  registry entirely - for axescheck's identity-neutralize/restore, which measures against a
+	 *  temporary probe value (never the user's real orientation) and must not overwrite the registry
+	 *  with it. Returns null when this accelerometer's wiring can't be found anywhere (R3). */
+	async function buildActivationCodeWithOrientation(accel: AccelerometerRef, orientation: string): Promise<string | null> {
+		const wiring = await findExistingWiring(host, accel);
+		if (!wiring) {
+			return null;
+		}
+		const q = wiring.spiFrequency ? ` Q${wiring.spiFrequency}` : "";
+		return `M955 C"${wiring.cSpec}" I${orientation}${q}`;
+	}
+
+	/**
+	 * Build the full M955 activation line for `accel` using its registry orientation, or null if it
+	 * can't be activated under the new scheme (no wiring found anywhere - R3 - or never configured at
+	 * all). Reissued before every single measurement, unconditionally (R2) - there is no "skip if
+	 * already active" optimisation, since nothing tells this plugin whether some other code path
+	 * repointed the active accelerometer since the last capture.
+	 */
+	async function buildActivationCode(accel: AccelerometerRef): Promise<string | null> {
+		const canAddress = parseInt(accel.id, 10) || 0;
+		const live = liveAccelState(canAddress);
+		const registry = loadOrientationRegistry();
+		let entry = findOrientationEntry(registry, canAddress, live?.uniqueId ?? null);
+		if (!entry && live) {
+			// First time this board is seen this session (or its uniqueId changed) - seed from the OM,
+			// which is always current, rather than from config.g's possibly-stale I (R4).
+			entry = {
+				canAddress, uniqueId: live.uniqueId, orientation: live.orientation,
+				resolution: live.resolution, samplingRate: live.samplingRate,
+			};
+			saveOrientationEntry(entry);
+		}
+		if (!entry) {
+			return null; // board never configured at all - nothing to reactivate
+		}
+		const wiring = await findExistingWiring(host, accel);
+		if (!wiring) {
+			return null;
+		}
+		const q = wiring.spiFrequency ? ` Q${wiring.spiFrequency}` : "";
+		return `M955 C"${wiring.cSpec}" I${entry.orientation}${q} R${entry.resolution ?? 10} S${entry.samplingRate ?? 1000}`;
+	}
+
+	// Which discovered accelerometers have no recorded wiring (new-scheme firmware only) - a SEPARATE
+	// ref, not folded into the accelItems/selectedAccel/currentToolNumber watcher chain above (see
+	// CLAUDE.md's note on that chain needing `{ immediate: true }` and not gaining an untested fourth
+	// dependency), and not a plain `computed` because the check needs async host I/O (config.g/tpost
+	// text), which a computed can't do. selectedAccel/autoSelectAccel keep reading the base `accelItems`
+	// unaffected - an accelerometer with missing wiring is still selectable (R3: "shown, not hidden"),
+	// just visually flagged for the template.
+	const wiringMissingIds = ref<Set<string>>(new Set());
+	watch(accelItems, async (items) => {
+		if (!usesNewAccelScheme.value || items.length === 0) {
+			wiringMissingIds.value = new Set();
+			return;
+		}
+		// Vue does not await/catch an async watcher callback - an unswallowed rejection here (e.g. a
+		// config.g read failing while briefly disconnected) becomes an unhandled promise rejection,
+		// which fails CI outright even with every test green (see CLAUDE.md). This is best-effort
+		// discovery, not a user-facing action, so a failure here should leave the existing flags alone
+		// rather than surface an error the user didn't ask for.
+		try {
+			const missing = new Set<string>();
+			for (const item of items) {
+				if (!(await findExistingWiring(host, item))) {
+					missing.add(item.id);
+				}
+			}
+			wiringMissingIds.value = missing;
+		} catch {
+			// leave wiringMissingIds as it was - a stale/absent flag is far less harmful than a crash
+		}
+	}, { immediate: true });
+
+	/** accelItems augmented with `wiringMissing`, for the picker template only. */
+	const accelItemsForPicker = computed<Array<AccelerometerRef>>(() => accelItems.value.map((a) => ({
+		...a, wiringMissing: wiringMissingIds.value.has(a.id),
+	})));
+	/** For the single-accelerometer (non-select) fallback display, which reads the base `selectedAccel`
+	 *  rather than `accelItemsForPicker` - avoids an inline re-lookup (and Vue-2-template optional
+	 *  chaining risk) in either template. */
+	const selectedAccelWiringMissing = computed(() => !!selectedAccel.value && wiringMissingIds.value.has(selectedAccel.value.id));
+
 	/** Centre of the selected axis's travel, from the object model (fallback: current position). */
 	function axisCenter(): number {
 		const axes = (host.model() as { move?: { axes?: Array<{ letter?: string; min?: number; max?: number; userPosition?: number | null }> } }).move?.axes ?? [];
@@ -829,6 +943,16 @@ export function useResonanceLab(host: HostAdapter) {
 		if (!accel) {
 			return;
 		}
+		// Computed once per measure() call (R2's "reissue before every measurement" is satisfied by
+		// each capture function resending this same string before its own M956 - see orchestrator.ts's
+		// activateAndSnapshotRuns - not by recomputing it per axis/per speed here). On new-scheme
+		// firmware, a null result means this accelerometer has no wiring recorded anywhere (R3) - fail
+		// BEFORE moving anything, rather than falling through to a P-based M956 the firmware will reject.
+		const activationCode = usesNewAccelScheme.value ? (await buildActivationCode(accel)) ?? undefined : undefined;
+		if (usesNewAccelScheme.value && !activationCode) {
+			error.value = t("orientation.wiringMissing");
+			return;
+		}
 		// Guard: every visible axis must be homed before we shake the machine.
 		const axesModel = (host.model() as { move?: { axes?: Array<{ visible?: boolean; homed?: boolean }> } }).move?.axes ?? [];
 		if (axesModel.some((a) => a.visible !== false && a.homed === false)) {
@@ -865,22 +989,40 @@ export function useResonanceLab(host: HostAdapter) {
 					accelerometer: accel, axis: selectedAxis.value, center: axisCenter(),
 					freq: adv.value.exciteFreq, seconds: adv.value.exciteSeconds, expectedSampleRate: sampleRate,
 					programDir: effectiveProgramDir.value, ...axisLimits(selectedAxis.value),
-					restoreShaper: currentShaperState(),
+					restoreShaper: currentShaperState(), activationCode,
 				}));
 				finish(parse(await raceCancellable(downloadCapture(io, run))), `${selectedAxis.value} · ${adv.value.exciteFreq} Hz`);
 			} else if (method.value === "axescheck") {
 				// Measure the RAW mounting. Any orientation already configured in M955 makes the chip report
 				// machine-aligned axes, so without this we'd solve a correction on top of the existing one —
 				// e.g. re-running after applying I06 would read "already correct" and suggest the wrong value.
-				// Neutralise to identity (I20) for the test, then restore whatever was configured.
+				// Neutralise to identity (I20) for the test, then restore whatever was configured. On
+				// new-scheme firmware a bare `M955 P<id> I20` is a silent no-op (R1: I is only read inside
+				// the C-seen branch) - build a full activation line pinned to I20 instead, and pass THAT
+				// (not the generic per-measurement `activationCode` above, which carries the REAL
+				// orientation) into every capture below, so the neutralisation survives R2's per-capture
+				// reissue instead of being undone by it.
 				const prevOrientation = await readAccelOrientation(accel.id);
-				await io.sendCode(`M955 P${accel.id} I20`);
+				let neutralCode: string | undefined;
+				if (usesNewAccelScheme.value) {
+					const code = await buildActivationCodeWithOrientation(accel, "20");
+					if (!code) {
+						error.value = t("orientation.wiringMissing");
+						return;
+					}
+					neutralCode = code;
+					await io.sendCode(neutralCode);
+				} else {
+					await io.sendCode(`M955 P${accel.id} I20`);
+				}
 				try {
 					// One sharp move per horizontal axis; gravity (pre-motion DC) pins the vertical.
 					const moveResults: Partial<Record<"X" | "Y", ReturnType<typeof analyzeAxisBurst>>> = {};
 					let firstCapture: ReturnType<typeof parseAccelCsv> | null = null;
 					for (const ax of ["X", "Y"] as const) {
-						const run = await raceCancellable(runNativeCapture(io, { accelerometer: accel, axis: ax, center: centerOf(ax), span: 20 }));
+						const run = await raceCancellable(runNativeCapture(io, {
+							accelerometer: accel, axis: ax, center: centerOf(ax), span: 20, activationCode: neutralCode,
+						}));
 						const capture = parseAccelCsv(await raceCancellable(downloadCapture(io, run)));
 						firstCapture = firstCapture ?? capture;
 						moveResults[ax] = analyzeAxisBurst(capture);
@@ -889,7 +1031,14 @@ export function useResonanceLab(host: HostAdapter) {
 					orientationResult.value = { solution: solveOrientation(moveResults, gravity), accelId: accel.id, coupling: Math.max(moveResults.X!.coupling, moveResults.Y!.coupling) };
 					lastResult.value = null;
 				} finally {
-					await io.sendCode(`M955 P${accel.id} I${prevOrientation}`);
+					if (usesNewAccelScheme.value) {
+						const restoreCode = await buildActivationCodeWithOrientation(accel, String(prevOrientation));
+						if (restoreCode) {
+							await io.sendCode(restoreCode);
+						}
+					} else {
+						await io.sendCode(`M955 P${accel.id} I${prevOrientation}`);
+					}
 				}
 			} else if (method.value === "motor") {
 				const motor = activeMotor.value;
@@ -904,7 +1053,7 @@ export function useResonanceLab(host: HostAdapter) {
 					for (const speed of plannedMotorSpeeds(sampleRate)) {
 						const m = buildMotorMove(motor, host.model(), adv.value.motorLength, speed);
 						const run = await raceCancellable(runMotorPointCapture(io, {
-							accelerometer: accel, move: m, expectedSampleRate: sampleRate,
+							accelerometer: accel, move: m, expectedSampleRate: sampleRate, activationCode,
 						}));
 						const cap = parseAccelCsv(await raceCancellable(downloadCapture(io, run)));
 						const w = analysisWindow(m, cap.samplingRate, cap.channels[0]?.length ?? 0);
@@ -981,7 +1130,7 @@ export function useResonanceLab(host: HostAdapter) {
 					});
 
 					const run = await raceCancellable(runMotorPointCapture(io, {
-						accelerometer: accel, move: m, expectedSampleRate: sampleRate, roundTrip: true,
+						accelerometer: accel, move: m, expectedSampleRate: sampleRate, roundTrip: true, activationCode,
 					}));
 					const cap = parseAccelCsv(await raceCancellable(downloadCapture(io, run)));
 					if (io.delete) {
@@ -1037,7 +1186,7 @@ export function useResonanceLab(host: HostAdapter) {
 					expectedSampleRate: sampleRate, programDir: effectiveProgramDir.value,
 					// Both axes move at once on a diagonal - use whichever is more restrictive.
 					maxAccel: Math.min(limX.maxAccel, limY.maxAccel), maxFeedrate: Math.min(limX.maxFeedrate, limY.maxFeedrate),
-					restoreShaper: currentShaperState(),
+					restoreShaper: currentShaperState(), activationCode,
 				};
 				// The CoreXY diagonal sweep finishes well before its kinematic estimate, so a count-based
 				// recording over-samples into idle time if it doesn't know the real duration in advance.
@@ -1096,7 +1245,7 @@ export function useResonanceLab(host: HostAdapter) {
 				const entries: Array<{ speed: number; capture: ReturnType<typeof parseAccelCsv> }> = [];
 				await withShaperDisabled(async () => {
 					for (let speed = adv.value.speedMin; speed <= adv.value.speedMax; speed += Math.max(1, adv.value.speedStep)) {
-						const run = await raceCancellable(runSpeedPointCapture(io, { accelerometer: accel, axis: selectedAxis.value, center: axisCenter(), speed, expectedSampleRate: sampleRate }));
+						const run = await raceCancellable(runSpeedPointCapture(io, { accelerometer: accel, axis: selectedAxis.value, center: axisCenter(), speed, expectedSampleRate: sampleRate, activationCode }));
 						entries.push({ speed, capture: parseAccelCsv(await raceCancellable(downloadCapture(io, run))) });
 					}
 				});
@@ -1113,7 +1262,7 @@ export function useResonanceLab(host: HostAdapter) {
 						accelerometer: accel, axis: ax, center: centerOf(ax),
 						startFreq: adv.value.startFreq, endFreq: adv.value.endFreq, hzPerSec: adv.value.hzPerSec,
 						expectedSampleRate: sampleRate, programDir: effectiveProgramDir.value, ...axisLimits(ax),
-						restoreShaper,
+						restoreShaper, activationCode,
 					}));
 					collected.push({ axis: ax, ...parse(await raceCancellable(downloadCapture(io, run)), { minFreq: adv.value.startFreq, maxFreq: adv.value.endFreq }) });
 				}
@@ -1132,6 +1281,7 @@ export function useResonanceLab(host: HostAdapter) {
 					customMoves: method.value === "custom" && adv.value.customMoves.trim()
 						? adv.value.customMoves.split("\n").map((l) => l.trim()).filter(Boolean)
 						: undefined,
+					activationCode,
 				}));
 				// "custom" runs the user's own G-code verbatim - it owns shaper state, same as axescheck
 				// (which isn't measuring resonance at all). Only "move" gets the automatic disable/restore.
@@ -1175,7 +1325,7 @@ export function useResonanceLab(host: HostAdapter) {
 	 * was scored on. Shared by the single-axis Verify and the multi-axis "verify all" below.
 	 */
 	async function verifyAxis(
-		accel: { id: string; label: string }, before: { axis: string; analysis: CaptureAnalysis }, sampleRate: number,
+		accel: AccelerometerRef, before: { axis: string; analysis: CaptureAnalysis }, sampleRate: number, activationCode: string | undefined,
 	): Promise<{ reduction: number; labels: Array<number>; beforeData: Array<number>; afterData: Array<number> }> {
 		const minFreq = adv.value.startFreq;
 		const maxFreq = adv.value.endFreq;
@@ -1183,7 +1333,7 @@ export function useResonanceLab(host: HostAdapter) {
 			accelerometer: accel, axis: before.axis, center: centerOf(before.axis),
 			startFreq: adv.value.startFreq, endFreq: adv.value.endFreq, hzPerSec: adv.value.hzPerSec,
 			keepShaper: true, expectedSampleRate: sampleRate, programDir: effectiveProgramDir.value,
-			...axisLimits(before.axis),
+			...axisLimits(before.axis), activationCode,
 		}));
 		const after = analyseCapture(parseAccelCsv(await raceCancellable(downloadCapture(io, run))), { minFreq, maxFreq });
 		const labels: Array<number> = [];
@@ -1216,6 +1366,11 @@ export function useResonanceLab(host: HostAdapter) {
 		if (!accel || !before || !shaper) {
 			return;
 		}
+		const activationCode = usesNewAccelScheme.value ? (await buildActivationCode(accel)) ?? undefined : undefined;
+		if (usesNewAccelScheme.value && !activationCode) {
+			error.value = t("orientation.wiringMissing");
+			return;
+		}
 		cancelRequested.value = false;
 		running.value = true;
 		error.value = "";
@@ -1223,7 +1378,7 @@ export function useResonanceLab(host: HostAdapter) {
 			await moveToZIfSet();
 			await moveToCenters([before.axis]);
 			const sampleRate = await readAccelRate(accel.id);
-			const { reduction, labels, beforeData, afterData } = await verifyAxis(accel, before, sampleRate);
+			const { reduction, labels, beforeData, afterData } = await verifyAxis(accel, before, sampleRate, activationCode);
 			verifyResult.value = { reduction, before: { labels, data: beforeData }, after: afterData, shaper };
 		} catch (e) {
 			if (e instanceof MeasurementCancelledError) {
@@ -1248,6 +1403,11 @@ export function useResonanceLab(host: HostAdapter) {
 		if (!accel || !shaper || multiResults.value.length === 0) {
 			return;
 		}
+		const activationCode = usesNewAccelScheme.value ? (await buildActivationCode(accel)) ?? undefined : undefined;
+		if (usesNewAccelScheme.value && !activationCode) {
+			error.value = t("orientation.wiringMissing");
+			return;
+		}
 		cancelRequested.value = false;
 		running.value = true;
 		error.value = "";
@@ -1258,7 +1418,7 @@ export function useResonanceLab(host: HostAdapter) {
 			const sampleRate = await readAccelRate(accel.id);
 			const perAxis: Array<{ axis: string; reduction: number; labels: Array<number>; beforeData: Array<number>; afterData: Array<number> }> = [];
 			for (const before of multiResults.value) {
-				const { reduction, labels, beforeData, afterData } = await verifyAxis(accel, before, sampleRate);
+				const { reduction, labels, beforeData, afterData } = await verifyAxis(accel, before, sampleRate, activationCode);
 				perAxis.push({ axis: before.axis, reduction, labels, beforeData, afterData });
 			}
 			multiVerifyResult.value = { shaper, perAxis };
@@ -1828,7 +1988,28 @@ export function useResonanceLab(host: HostAdapter) {
 		if (!o?.solution.iParam) {
 			return;
 		}
-		await host.sendCode(`M955 P${o.accelId} I${o.solution.iParam}`);
+		if (usesNewAccelScheme.value) {
+			// A bare `M955 P<id> I<n>` is a silent no-op here (R1: I is only read inside the C-seen
+			// branch) - build a full activation line with the just-solved orientation instead.
+			const accel = accelItems.value.find((a) => a.id === o.accelId);
+			const code = accel ? await buildActivationCodeWithOrientation(accel, o.solution.iParam) : null;
+			if (!code) {
+				error.value = t("orientation.wiringMissing");
+				return;
+			}
+			await host.sendCode(code);
+			// Persist to the registry, not just apply at runtime - config.g's own I goes stale the
+			// instant this runs, so this is what makes the NEXT reactivation of this board (the very
+			// next capture, per R2) pick up the orientation just solved here, rather than a stale one.
+			const canAddress = parseInt(o.accelId, 10) || 0;
+			const live = liveAccelState(canAddress);
+			saveOrientationEntry({
+				canAddress, uniqueId: live?.uniqueId ?? null, orientation: parseInt(o.solution.iParam, 10),
+				resolution: live?.resolution, samplingRate: live?.samplingRate,
+			});
+		} else {
+			await host.sendCode(`M955 P${o.accelId} I${o.solution.iParam}`); // unchanged legacy path
+		}
 		host.notify("success", "Resonance Lab", t("orientation.applied", { i: o.solution.iParam }));
 	}
 
@@ -1864,6 +2045,15 @@ export function useResonanceLab(host: HostAdapter) {
 	// time and the templates only need to bind to it, not duplicate this flow.
 	const shaperScopeDialogOpen = ref(false);
 	const pendingShaperFit = ref<AppliedShaper | null>(null);
+	/** Mutually exclusive with pendingShaperFit - whichever save flow is active clears the other's
+	 *  pending state up front (see saveShaperFit/saveOrientationToConfig), so chooseShaperScope always
+	 *  has exactly one to resolve regardless of which flow was used last. */
+	const pendingAccelSave = ref<{ accel: AccelerometerRef; orientation: string } | null>(null);
+	/** For the scope dialog's copy while it's open (R9: config.g and tpost<N>.g carry materially
+	 *  different consequences for M955 than for M593 - "don't reuse 'all tools' copy verbatim"). */
+	const pendingSaveKind = computed<"M955" | "M593" | null>(() => (
+		pendingAccelSave.value ? "M955" : pendingShaperFit.value ? "M593" : null
+	));
 	const configDialogOpen = ref(false);
 	const configDialogBusy = ref(false);
 	const configDialogError = ref("");
@@ -1892,6 +2082,23 @@ export function useResonanceLab(host: HostAdapter) {
 		const accel = accelItems.value.find((a) => a.toolNumber === activeTool.value);
 		return accel ? `T${accel.toolNumber}${accel.toolName ? ` ${accel.toolName}` : ""}` : `T${activeTool.value}`;
 	});
+	/**
+	 * The scope dialog's "this tool only" option means something different per directive: for a
+	 * shaper (M593) it's always the currently MOUNTED tool (a shaper save is about what's active now).
+	 * For an accelerometer (M955) it's the tool THAT ACCELEROMETER belongs to, which may not be the
+	 * tool currently mounted at all (you can save T1's accelerometer while T0 is on the machine) - so
+	 * this can't reuse activeTool/activeToolLabel directly.
+	 */
+	const scopeDialogHasTool = computed(() => (
+		pendingSaveKind.value === "M955" ? (pendingAccelSave.value?.accel.toolNumber ?? -1) >= 0 : activeTool.value >= 0
+	));
+	const scopeDialogToolLabel = computed(() => {
+		if (pendingSaveKind.value !== "M955") {
+			return activeToolLabel.value;
+		}
+		const accel = pendingAccelSave.value?.accel;
+		return accel?.toolNumber !== undefined ? `T${accel.toolNumber}${accel.toolName ? ` ${accel.toolName}` : ""}` : "";
+	});
 
 	async function previewConfigSave(
 		code: "M955" | "M593", build: () => Promise<{ plan: DirectiveEditPlan; notes: Array<string> }>,
@@ -1912,20 +2119,36 @@ export function useResonanceLab(host: HostAdapter) {
 		}
 	}
 
-	/** Preview writing the just-checked accelerometer orientation into config.g's M955 line. */
+	/**
+	 * Preview persisting the just-checked accelerometer orientation (and, on new-scheme firmware, its
+	 * wiring) so it survives a reboot. Always asks where when more than one accelerometer exists on
+	 * new-scheme firmware (R9) - never inferred from toolNumber or any other guess at machine type.
+	 * Below that (legacy firmware, or a single-accelerometer machine where the choice is real but
+	 * trivial) goes straight to config.g, same as before this feature existed.
+	 */
 	async function saveOrientationToConfig(): Promise<void> {
 		const o = orientationResult.value;
 		if (!o?.solution.iParam) {
 			return;
 		}
-		const iParam = o.solution.iParam;
-		await previewConfigSave("M955", async () => ({ plan: await planOrientationSave(host, o.accelId, iParam), notes: [] }));
+		const accel = accelItems.value.find((a) => a.id === o.accelId);
+		if (!accel) {
+			return; // board vanished from the OM since the orientation ran
+		}
+		pendingShaperFit.value = null; // mutually exclusive with a shaper save - see chooseShaperScope
+		pendingAccelSave.value = { accel, orientation: o.solution.iParam };
+		if (!usesNewAccelScheme.value || accelItems.value.length <= 1) {
+			await chooseShaperScope("all");
+			return;
+		}
+		shaperScopeDialogOpen.value = true;
 	}
 
 	/** Entry point for the scope-choice dialog - skipped (defaulting straight to "all") on a machine
 	 *  with no tool-changer accelerometer at all, so a single-accelerometer setup sees one dialog
 	 *  (the diff preview), not two. */
 	async function saveShaperFit(name: ShaperName, freq: number, dampingRatio: number): Promise<void> {
+		pendingAccelSave.value = null; // mutually exclusive with an accel save - see chooseShaperScope
 		pendingShaperFit.value = { name, freq, dampingRatio };
 		if (!isToolChanger.value) {
 			await chooseShaperScope("all");
@@ -1944,12 +2167,20 @@ export function useResonanceLab(host: HostAdapter) {
 	function cancelShaperScope(): void {
 		shaperScopeDialogOpen.value = false;
 		pendingShaperFit.value = null;
+		pendingAccelSave.value = null;
 	}
 
 	/** Resolve the scope choice into a preview - "all" edits config.g, "tool" edits the active tool's
-	 *  own tpost<N>.g, creating it if it doesn't exist yet. */
+	 *  own tpost<N>.g, creating it if it doesn't exist yet. Checks the accelerometer save first: the
+	 *  two flows are mutually exclusive (each clears the other's pending state before opening this
+	 *  dialog), so at most one of these is ever actually set. */
 	async function chooseShaperScope(scope: ShaperScope): Promise<void> {
 		shaperScopeDialogOpen.value = false;
+		const accelSave = pendingAccelSave.value;
+		if (accelSave) {
+			await previewConfigSave("M955", () => planAccelSave(host, accelSave.accel, scope, accelSave.orientation));
+			return;
+		}
 		const fit = pendingShaperFit.value;
 		if (!fit) {
 			return;
@@ -2017,6 +2248,9 @@ export function useResonanceLab(host: HostAdapter) {
 		beltPhase,
 		beltEstablishingTiming,
 		accelItems,
+		accelItemsForPicker,
+		selectedAccelWiringMissing,
+		usesNewAccelScheme,
 		selectedAccel,
 		axisItems,
 		motorItems,
@@ -2086,6 +2320,10 @@ export function useResonanceLab(host: HostAdapter) {
 		applyShaper,
 		shaperScopeDialogOpen,
 		pendingShaperFit,
+		pendingAccelSave,
+		pendingSaveKind,
+		scopeDialogHasTool,
+		scopeDialogToolLabel,
 		configDialogOpen,
 		configDialogBusy,
 		configDialogError,

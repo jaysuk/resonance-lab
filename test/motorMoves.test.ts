@@ -191,4 +191,26 @@ describe("runMotorPointCapture", () => {
 		const roundTripSamples = Number(/S(\d+)/.exec(armLine)![1]);
 		expect(roundTripSamples).toBeGreaterThan(singleSamples);
 	});
+
+	it("sends the activation line, THEN samples the run counter, THEN arms with P omitted", async () => {
+		// M955 C"..." (RRF >= 3.7.0-rc.1) deletes and recreates the accelerometer object, resetting its
+		// run counter - sampling runsBefore before activating would snapshot the wrong object's count.
+		const order: Array<string> = [];
+		const io: MachineIO = {
+			sendCode: async (code) => { order.push(`send:${code}`); return "ok"; },
+			upload: async () => {},
+			download: async () => "",
+			accelRuns: () => { order.push("accelRuns"); return 0; },
+		};
+		const option = deriveMotorOptions(coreXY).find((o) => o.label === "X+Y")!;
+		const move = buildMotorMove(option, coreXY, 100, 50);
+		await runMotorPointCapture(io, {
+			accelerometer: { id: "121.0", label: "T0" }, move, expectedSampleRate: 1344,
+			activationCode: 'M955 C"121.i2c.lis" I6',
+		});
+		expect(order[0]).toContain("G1 X"); // positioning move first
+		expect(order[1]).toBe('send:M955 C"121.i2c.lis" I6');
+		expect(order[2]).toBe("accelRuns");
+		expect(order[3]).not.toContain("P121.0");
+	});
 });

@@ -58,7 +58,8 @@ export interface MachineIO {
 }
 
 export interface AccelerometerRef {
-	/** M956 P parameter (board CAN address, e.g. "0" or "121.0"). */
+	/** M956 P parameter (board CAN address, e.g. "0" or "121.0"). Still a valid internal key on
+	 *  RRF >= 3.7.0-rc.1 - it's just no longer literally sent as P once activationCode is in play. */
 	id: string;
 	/** Display label (board name, or "T<n> <name> — <board>" when tied to a tool-changer tool). */
 	label: string;
@@ -66,6 +67,11 @@ export interface AccelerometerRef {
 	toolNumber?: number;
 	/** That tool's configured name (M563 P<n> S"<name>"), when it has one. */
 	toolName?: string;
+	/** True when this accelerometer's C/Q wiring wasn't found in config.g or its tool's tpost<N>.g -
+	 *  only meaningful on RRF >= 3.7.0-rc.1; always false/undefined on legacy firmware, where wiring
+	 *  was never needed to select it. Set by useResonanceLab.ts (needs async host I/O to check), never
+	 *  by mapAccelerometers itself, which stays a pure, synchronous, model-only derivation. */
+	wiringMissing?: boolean;
 }
 
 /**
@@ -115,6 +121,24 @@ async function sendChecked(io: MachineIO, code: string): Promise<void> {
 }
 
 /**
+ * Send the activation line (if present) and ONLY THEN sample the run counter. The order matters:
+ * `M955 C"..."` (RRF >= 3.7.0-rc.1) deletes and recreates the accelerometer object, resetting its
+ * `runs` counter to 0 - sampling `runsBefore` before activating would snapshot the OLD object's
+ * count, and `downloadCapture`'s `awaitAccelRun` would then wait for a value the recreated counter
+ * never reaches (it silently falls back to file polling, so this doesn't error - every capture just
+ * burns its full timeout budget first, which reads as "the plugin hangs"). Every capture function
+ * below MUST snapshot `runsBefore` through this helper, never by calling `io.accelRuns` directly.
+ */
+async function activateAndSnapshotRuns(
+	io: MachineIO, options: { accelerometer: AccelerometerRef; activationCode?: string },
+): Promise<number | undefined> {
+	if (options.activationCode) {
+		await sendChecked(io, options.activationCode);
+	}
+	return io.accelRuns?.(options.accelerometer.id);
+}
+
+/**
  * Program files are PER-RUN: the firmware holds the macro file open while M98 executes, and
  * sendCode does NOT reliably block until a long macro completes - overwriting a shared filename
  * for the next run fails with "Cannot delete file because it is open" (live-printer finding).
@@ -151,6 +175,11 @@ export interface SweepCaptureOptions extends SweepOptions {
 	expectedSampleRate?: number;
 	/** Directory the generated program file is uploaded to. Defaults to DEFAULT_PROGRAM_DIR. */
 	programDir?: string;
+	/** Full M955 line to send immediately before arming (RRF >= 3.7.0-rc.1's single-accelerometer
+	 *  scheme, e.g. `M955 C"121.i2c.lis" I6 Q2000000 R10 S1344`) - undefined on legacy firmware, where
+	 *  P-based selection in the M956 line itself still works. When present, P is omitted from that
+	 *  M956 line entirely (P0 and no P are identical there - RRF discards the value once validated). */
+	activationCode?: string;
 }
 
 export interface CaptureRun {
@@ -198,9 +227,11 @@ export async function runSweepCapture(io: MachineIO, options: SweepCaptureOption
 
 	// M400 drains motion, M956 arms the recorder (A0 = start now, F names the file), M98 runs the
 	// program. sendCode resolving does NOT prove the recording finished (M956 flushes async), so
-	// snapshot the run counter first and let downloadCapture wait for it to tick.
-	const runsBefore = io.accelRuns?.(options.accelerometer.id);
-	await sendChecked(io, `M400 M956 P${options.accelerometer.id} S${samples} A0 F"${name}" M98 P"${progPath}"`);
+	// snapshot the run counter first (AFTER activating - see activateAndSnapshotRuns) and let
+	// downloadCapture wait for it to tick.
+	const runsBefore = await activateAndSnapshotRuns(io, options);
+	const pParam = options.activationCode ? "" : `P${options.accelerometer.id} `;
+	await sendChecked(io, `M400 M956 ${pParam}S${samples} A0 F"${name}" M98 P"${progPath}"`);
 	return { csvPath, program, accelId: options.accelerometer.id, runsBefore, progPath };
 }
 
@@ -222,6 +253,8 @@ export interface BeltCaptureOptions {
 	programDir?: string;
 	/** Shaper configuration (read from the object model before the test) to restore once it's over. */
 	restoreShaper?: ShaperState;
+	/** See SweepCaptureOptions.activationCode. */
+	activationCode?: string;
 }
 
 function beltProgram(options: BeltCaptureOptions): SweepProgram {
@@ -269,15 +302,18 @@ export async function runBeltCapture(io: MachineIO, options: BeltCaptureOptions)
 	await ensureDir(io, options.programDir ?? DEFAULT_PROGRAM_DIR);
 	await io.upload(progPath, program.lines.join("\n") + "\n");
 	const rate = options.expectedSampleRate ?? 1000;
-	const runsBefore = io.accelRuns?.(options.accelerometer.id);
+	// Activate ONCE, above the sized/self-sizing branch below - both paths arm the SAME accelerometer,
+	// so there's no need (and no correctness reason) to resend the activation line twice.
+	const runsBefore = await activateAndSnapshotRuns(io, options);
+	const pParam = options.activationCode ? "" : `P${options.accelerometer.id} `;
 
 	if (options.samples !== undefined) {
-		await sendChecked(io, `M400 M956 P${options.accelerometer.id} S${options.samples} A0 F"${name}" M98 P"${progPath}"`);
+		await sendChecked(io, `M400 M956 ${pParam}S${options.samples} A0 F"${name}" M98 P"${progPath}"`);
 		return { csvPath, program, accelId: options.accelerometer.id, runsBefore, progPath };
 	}
 
 	const oversizedSamples = Math.min(200000, Math.ceil((program.durationSec + 2) * rate));
-	const sendPromise = sendChecked(io, `M400 M956 P${options.accelerometer.id} S${oversizedSamples} A0 F"${name}" M98 P"${progPath}"`);
+	const sendPromise = sendChecked(io, `M400 M956 ${pParam}S${oversizedSamples} A0 F"${name}" M98 P"${progPath}"`);
 
 	let motionSec: number | undefined;
 	if (io.awaitBusy && io.awaitIdle) {
@@ -321,6 +357,8 @@ export interface NativeCaptureOptions {
 	samples?: number;
 	/** ADVANCED: explicit move lines (full G-code) replacing the generated default profile. */
 	customMoves?: Array<string>;
+	/** See SweepCaptureOptions.activationCode. */
+	activationCode?: string;
 }
 
 /**
@@ -347,8 +385,9 @@ export async function runNativeCapture(io: MachineIO, options: NativeCaptureOpti
 	// Move to the start, then arm, dwell (clean pre-motion samples for gravity/noise floors), and
 	// execute the profile in one line so recording brackets it.
 	await sendChecked(io, `G1 ${axis}${options.center - span} F${feedrate} M400`);
-	const runsBefore = io.accelRuns?.(options.accelerometer.id);
-	await sendChecked(io, `M956 P${options.accelerometer.id} S${samples} A0 F"${name}" G4 P300 ${moves.join(" ")} M400`);
+	const runsBefore = await activateAndSnapshotRuns(io, options);
+	const pParam = options.activationCode ? "" : `P${options.accelerometer.id} `;
+	await sendChecked(io, `M956 ${pParam}S${samples} A0 F"${name}" G4 P300 ${moves.join(" ")} M400`);
 	return {
 		csvPath,
 		program: { lines: moves, pulses: moves.length, durationSec: 0, maxExcursion: span },
@@ -443,8 +482,9 @@ export async function runFixedExcitation(io: MachineIO, options: SweepCaptureOpt
 	await io.upload(progPath, program.lines.join("\n") + "\n");
 	const rate = options.expectedSampleRate ?? 1000;
 	const samples = Math.min(200000, Math.ceil((program.durationSec + 2) * rate));
-	const runsBefore = io.accelRuns?.(options.accelerometer.id);
-	await sendChecked(io, `M400 M956 P${options.accelerometer.id} S${samples} A0 F"${name}" M98 P"${progPath}"`);
+	const runsBefore = await activateAndSnapshotRuns(io, options);
+	const pParam = options.activationCode ? "" : `P${options.accelerometer.id} `;
+	await sendChecked(io, `M400 M956 ${pParam}S${samples} A0 F"${name}" M98 P"${progPath}"`);
 	return { csvPath, program, accelId: options.accelerometer.id, runsBefore, progPath };
 }
 
@@ -457,6 +497,8 @@ export interface SpeedPointCaptureOptions {
 	/** Half-span of the constant-speed pass (mm). */
 	span?: number;
 	expectedSampleRate?: number;
+	/** See SweepCaptureOptions.activationCode. */
+	activationCode?: string;
 }
 
 /**
@@ -473,9 +515,10 @@ export async function runSpeedPointCapture(io: MachineIO, options: SpeedPointCap
 	// Out + back at constant speed, plus margin for accel/decel phases.
 	const samples = Math.min(200000, Math.ceil(((4 * span) / options.speed) * rate * 1.3));
 	await sendChecked(io, `G1 ${axis}${options.center - span} F30000 M400`);
-	const runsBefore = io.accelRuns?.(options.accelerometer.id);
+	const runsBefore = await activateAndSnapshotRuns(io, options);
+	const pParam = options.activationCode ? "" : `P${options.accelerometer.id} `;
 	await sendChecked(io,
-		`M956 P${options.accelerometer.id} S${samples} A0 F"${name}" `
+		`M956 ${pParam}S${samples} A0 F"${name}" `
 		+ `G1 ${axis}${options.center + span} F${f} G1 ${axis}${options.center - span} F${f} M400`,
 	);
 	return {
@@ -499,6 +542,8 @@ export interface MotorPointCaptureOptions {
 	 * return legs are analysed as two separate windows (see analysisWindow's offsetSec).
 	 */
 	roundTrip?: boolean;
+	/** See SweepCaptureOptions.activationCode. */
+	activationCode?: string;
 }
 
 /**
@@ -522,8 +567,9 @@ export async function runMotorPointCapture(io: MachineIO, options: MotorPointCap
 	const moves = options.roundTrip
 		? `G1 ${axisWords(m, m.end)} F${m.feedrate} G1 ${axisWords(m, m.start)} F${m.feedrate} M400`
 		: `G1 ${axisWords(m, m.end)} F${m.feedrate} M400`;
-	const runsBefore = io.accelRuns?.(options.accelerometer.id);
-	await sendChecked(io, `M956 P${options.accelerometer.id} S${samples} A0 F"${name}" ${moves}`);
+	const runsBefore = await activateAndSnapshotRuns(io, options);
+	const pParam = options.activationCode ? "" : `P${options.accelerometer.id} `;
+	await sendChecked(io, `M956 ${pParam}S${samples} A0 F"${name}" ${moves}`);
 
 	return {
 		csvPath,
