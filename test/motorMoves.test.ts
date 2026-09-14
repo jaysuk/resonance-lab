@@ -192,9 +192,11 @@ describe("runMotorPointCapture", () => {
 		expect(roundTripSamples).toBeGreaterThan(singleSamples);
 	});
 
-	it("sends the activation line, THEN samples the run counter, THEN arms with P omitted", async () => {
-		// M955 C"..." (RRF >= 3.7.0-rc.1) deletes and recreates the accelerometer object, resetting its
-		// run counter - sampling runsBefore before activating would snapshot the wrong object's count.
+	it("sends the activation line, THEN samples the run counter, THEN arms with P0 (not the old board.driver id)", async () => {
+		// M955 P0 C"..." (RRF >= 3.7.0-rc.1) deletes and recreates the accelerometer object, resetting
+		// its run counter - sampling runsBefore before activating would snapshot the wrong object's
+		// count. P0 is mandatory (gb.MustSee) in both M955 and M956 under this scheme - never omitted,
+		// never the old board.driver-shaped id (GetLimitedUIValue caps it to exactly 0).
 		const order: Array<string> = [];
 		const io: MachineIO = {
 			sendCode: async (code) => { order.push(`send:${code}`); return "ok"; },
@@ -206,11 +208,30 @@ describe("runMotorPointCapture", () => {
 		const move = buildMotorMove(option, coreXY, 100, 50);
 		await runMotorPointCapture(io, {
 			accelerometer: { id: "121.0", label: "T0" }, move, expectedSampleRate: 1344,
-			activationCode: 'M955 C"121.i2c.lis" I6',
+			activationCode: 'M955 P0 C"121.i2c.lis" I6',
 		});
 		expect(order[0]).toContain("G1 X"); // positioning move first
-		expect(order[1]).toBe('send:M955 C"121.i2c.lis" I6');
+		expect(order[1]).toBe('send:M955 P0 C"121.i2c.lis" I6');
 		expect(order[2]).toBe("accelRuns");
+		expect(order[3]).toContain("M956 P0 S");
 		expect(order[3]).not.toContain("P121.0");
+	});
+
+	it("arms with activationSlot's own slot number under the multi-accelerometer scheme (RRF >= 3.7.0-rc.1+1)", async () => {
+		const order: Array<string> = [];
+		const io: MachineIO = {
+			sendCode: async (code) => { order.push(`send:${code}`); return "ok"; },
+			upload: async () => {},
+			download: async () => "",
+			accelRuns: () => 0,
+		};
+		const option = deriveMotorOptions(coreXY).find((o) => o.label === "X+Y")!;
+		const move = buildMotorMove(option, coreXY, 100, 50);
+		await runMotorPointCapture(io, {
+			accelerometer: { id: "121.0", label: "T0" }, move, expectedSampleRate: 1344,
+			activationCode: 'M955 P3 C"121.i2c.lis" I6', activationSlot: 3,
+		});
+		const armLine = order.find((o) => o.includes("M956"))!;
+		expect(armLine).toContain("M956 P3 S");
 	});
 });

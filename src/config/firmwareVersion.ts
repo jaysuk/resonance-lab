@@ -17,11 +17,34 @@
  */
 export const MIN_ACCEL_FIRMWARE = "3.7.0-rc.1";
 
+/**
+ * Minimum firmware for RRF's multi-accelerometer scheme (up to 10 independent slots, `P` selects
+ * which one, instead of being capped to `0`) - `RepRapFirmware@ee3c80b`/`Duet3Expansion@73549e0`,
+ * both landed the day after `MIN_ACCEL_FIRMWARE` itself and both reporting `"3.7.0-rc.1+1"`. A
+ * SEPARATE constant from `MIN_ACCEL_FIRMWARE`: a board can satisfy the first without the second
+ * (plain rc.1, still single-slot) - they gate genuinely different capabilities that happen to be one
+ * firmware release apart. Not yet in general release as of writing; expected in test builds ahead of
+ * 3.7.0 stable. Relies on `compareFirmwareVersions`'s "+N" build-number tiebreaker (see
+ * `ParsedVersion.build`) - without it this string would compare equal to plain "3.7.0-rc.1".
+ */
+export const MIN_MULTI_ACCEL_FIRMWARE = "3.7.0-rc.1+1";
+
 export interface ParsedVersion {
 	major: number;
 	minor: number;
 	patch: number;
 	prerelease: Array<string | number>;
+	/**
+	 * The numeric part of a "+N" suffix (e.g. "3.7.0-rc.1+1" -> 1). Real semver calls this "build
+	 * metadata" and defines it as precedence-NEUTRAL, but RRF uses it as a genuine sequential counter
+	 * WITHIN one prerelease tag - confirmed by reading two consecutive firmware commits' `Version.h`
+	 * diffs, both bumping only this number while leaving "rc.1" itself unchanged. Compared as the
+	 * last tiebreaker in `compareFirmwareVersions`, only once everything else is already equal;
+	 * undefined (compared as 0) when absent, so "3.7.0-rc.1" < "3.7.0-rc.1+1" < "3.7.0-rc.1+2". A
+	 * non-numeric suffix (a real build tag, e.g. a git hash) leaves this undefined and is otherwise
+	 * ignored, same as before this field existed.
+	 */
+	build?: number;
 }
 
 /** Split a prerelease string into identifiers, breaking at ".", "-", and letter/digit boundaries. */
@@ -34,7 +57,9 @@ function splitPrerelease(raw: string): Array<string | number> {
 
 /**
  * Parse an RRF-reported version string. Strips a parenthesised suffix (the STM32 port's
- * VERSION_SUFFIX) and a leading "v" first, then build metadata after "+", before matching semver.
+ * VERSION_SUFFIX) and a leading "v" first, then captures a numeric "+N" suffix as `build` (see
+ * `ParsedVersion.build`) before matching semver on what's left. A non-numeric suffix after "+" (real
+ * build metadata, e.g. a git hash) is dropped entirely, same as before `build` existed.
  */
 export function parseFirmwareVersion(raw: string): ParsedVersion | null {
 	if (!raw) {
@@ -42,7 +67,16 @@ export function parseFirmwareVersion(raw: string): ParsedVersion | null {
 	}
 	let s = raw.split("(")[0].trim();
 	s = s.replace(/^v/i, "");
-	s = s.split("+")[0];
+
+	let build: number | undefined;
+	const plusIndex = s.indexOf("+");
+	if (plusIndex !== -1) {
+		const buildPart = s.slice(plusIndex + 1);
+		s = s.slice(0, plusIndex);
+		if (/^\d+$/.test(buildPart)) {
+			build = parseInt(buildPart, 10);
+		}
+	}
 
 	const m = /^(\d+)\.(\d+)(?:\.(\d+))?(.*)$/.exec(s);
 	if (!m) {
@@ -53,7 +87,7 @@ export function parseFirmwareVersion(raw: string): ParsedVersion | null {
 	const patch = m[3] !== undefined ? parseInt(m[3], 10) : 0;
 	const rest = m[4].replace(/^[.-]/, "");
 	const prerelease = rest ? splitPrerelease(rest) : [];
-	return { major, minor, patch, prerelease };
+	return build !== undefined ? { major, minor, patch, prerelease, build } : { major, minor, patch, prerelease };
 }
 
 /** Compare two prerelease identifiers per semver precedence: numeric < alphanumeric; numeric compares numerically. */
@@ -71,7 +105,10 @@ function compareIdentifier(a: string | number, b: string | number): number {
 /**
  * Compare two firmware version strings. Semver precedence: major, minor, patch; then a version with
  * NO prerelease outranks one WITH a prerelease (3.7.0 > 3.7.0-rc.1); then prerelease identifiers
- * compare pairwise, and if all shared identifiers are equal the longer list wins.
+ * compare pairwise, and if all shared identifiers are equal the longer list wins; then, ONLY once all
+ * of that is tied, a "+N" build number breaks the tie (3.7.0-rc.1+1 > 3.7.0-rc.1; see
+ * `ParsedVersion.build` for why this departs from real semver, which treats build metadata as
+ * precedence-neutral - RRF does not use it that way).
  * @returns -1 if a < b, 0 if equal, 1 if a > b. Throws if either string fails to parse - callers that
  * need a safe boolean should use firmwareAtLeast instead.
  */
@@ -98,6 +135,10 @@ export function compareFirmwareVersions(a: string, b: string): number {
 	}
 	if (pa.prerelease.length !== pb.prerelease.length) {
 		return pa.prerelease.length < pb.prerelease.length ? -1 : 1; // longer list wins on a tie
+	}
+	const ba = pa.build ?? 0, bb = pb.build ?? 0;
+	if (ba !== bb) {
+		return ba < bb ? -1 : 1;
 	}
 	return 0;
 }

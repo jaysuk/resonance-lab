@@ -155,6 +155,15 @@
 		"skipRestart": "I'll restart later",
 		"close": "Close"
 	},
+	"migration": {
+		"banner": "{count} accelerometer line(s) are still set in a tool's own tpost file - on this firmware that can silently override config.g's own slot assignment the next time that tool is picked up.",
+		"review": "Review",
+		"dismiss": "Dismiss",
+		"title": "Consolidate accelerometer setup into config.g",
+		"body": "Move {from} into {to}, each with its own slot. This is a one-time cleanup: from then on, each board's wiring lives in config.g instead of being re-asserted (and possibly overridden) on every tool change.",
+		"confirm": "Consolidate",
+		"applied": "Consolidated into config.g."
+	},
 	"help": {
 		"title": "How to read these graphs",
 		"open": "Help",

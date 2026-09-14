@@ -17,6 +17,11 @@ export interface AccelWiring {
 	spiFrequency?: number;
 	/** CAN address this line's C prefix resolves to (0 = local/mainboard). */
 	canAddress: number;
+	/** The line's own P value - which of RRF's (up to 10, on multi-accelerometer firmware) logical
+	 *  accelerometer slots this wiring occupies. Defaults to 0 when the line has no P token at all (a
+	 *  line written before P became mandatory, or hand-edited) - the only value that was ever legal
+	 *  before multiple slots existed, so it's the correct assumption for an old line either way. */
+	slot: number;
 }
 
 /** Strip a param value's surrounding quotes, exactly as gcodeEdit's parseLines leaves them attached
@@ -50,7 +55,10 @@ function toWiring(line: GcodeLine): AccelWiring {
 	const canAddress = parseCPrefix(cSpec);
 	const rawQ = line.params.Q;
 	const spiFrequency = rawQ !== undefined ? parseInt(unquote(rawQ), 10) : NaN;
-	return Number.isNaN(spiFrequency) ? { cSpec, canAddress } : { cSpec, canAddress, spiFrequency };
+	const rawP = line.params.P;
+	const parsedSlot = rawP !== undefined ? parseInt(unquote(rawP), 10) : NaN;
+	const slot = Number.isNaN(parsedSlot) ? 0 : parsedSlot;
+	return Number.isNaN(spiFrequency) ? { cSpec, canAddress, slot } : { cSpec, canAddress, slot, spiFrequency };
 }
 
 /**
@@ -73,4 +81,15 @@ export function findAccelWiring(gcodeText: string, canAddress: number): AccelWir
 export function findOtherAccelWiring(gcodeText: string, canAddress: number): AccelWiring | null {
 	const other = activeM955Lines(gcodeText).find((l) => parseCPrefix(unquote(l.params.C)) !== canAddress);
 	return other ? toWiring(other) : null;
+}
+
+/**
+ * Every active M955 C line in the file, for ANY board - unlike `findAccelWiring`, not scoped to one
+ * `canAddress`. Used for machine-wide scans (e.g. finding every stray accelerometer line across every
+ * tool's own tpost<N>.g during migration) where the whole point is discovering every board at once,
+ * not looking one up. Returned in file order; unlike `findAccelWiring` there is no "last one wins"
+ * collapsing here - a caller scanning for strays wants to see every line, including a duplicate.
+ */
+export function findAllAccelWiring(gcodeText: string): Array<AccelWiring> {
+	return activeM955Lines(gcodeText).map(toWiring);
 }

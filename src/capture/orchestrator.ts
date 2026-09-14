@@ -176,10 +176,17 @@ export interface SweepCaptureOptions extends SweepOptions {
 	/** Directory the generated program file is uploaded to. Defaults to DEFAULT_PROGRAM_DIR. */
 	programDir?: string;
 	/** Full M955 line to send immediately before arming (RRF >= 3.7.0-rc.1's single-accelerometer
-	 *  scheme, e.g. `M955 C"121.i2c.lis" I6 Q2000000 R10 S1344`) - undefined on legacy firmware, where
-	 *  P-based selection in the M956 line itself still works. When present, P is omitted from that
-	 *  M956 line entirely (P0 and no P are identical there - RRF discards the value once validated). */
+	 *  scheme, e.g. `M955 P0 C"121.i2c.lis" I6 Q2000000 R10 S1344`) - undefined on legacy firmware,
+	 *  where the M956 line's own P selects the accelerometer by board.driver id as before. When
+	 *  present, that M956 line's P becomes literally "P0" instead - `gb.MustSee('P')` makes P
+	 *  mandatory in M956 exactly as in M955 (confirmed against RRF source, not the changelog's
+	 *  inaccurate "zero or omitted" description), and `GetLimitedUIValue('P', ActualMaxAccelerometers)`
+	 *  caps it to 0 - the old board.driver-shaped id is never a valid M956 P value under this scheme. */
 	activationCode?: string;
+	/** The slot number (M955/M956's P value) `activationCode` targets - 0 on single-slot firmware
+	 *  (see AccelWiring.slot), the board's own discovered slot (0-9) on multi-accelerometer firmware.
+	 *  Only meaningful when `activationCode` is set; ignored otherwise. */
+	activationSlot?: number;
 }
 
 export interface CaptureRun {
@@ -230,7 +237,7 @@ export async function runSweepCapture(io: MachineIO, options: SweepCaptureOption
 	// snapshot the run counter first (AFTER activating - see activateAndSnapshotRuns) and let
 	// downloadCapture wait for it to tick.
 	const runsBefore = await activateAndSnapshotRuns(io, options);
-	const pParam = options.activationCode ? "" : `P${options.accelerometer.id} `;
+	const pParam = options.activationCode ? `P${options.activationSlot ?? 0} ` : `P${options.accelerometer.id} `;
 	await sendChecked(io, `M400 M956 ${pParam}S${samples} A0 F"${name}" M98 P"${progPath}"`);
 	return { csvPath, program, accelId: options.accelerometer.id, runsBefore, progPath };
 }
@@ -255,6 +262,8 @@ export interface BeltCaptureOptions {
 	restoreShaper?: ShaperState;
 	/** See SweepCaptureOptions.activationCode. */
 	activationCode?: string;
+	/** See SweepCaptureOptions.activationSlot. */
+	activationSlot?: number;
 }
 
 function beltProgram(options: BeltCaptureOptions): SweepProgram {
@@ -305,7 +314,7 @@ export async function runBeltCapture(io: MachineIO, options: BeltCaptureOptions)
 	// Activate ONCE, above the sized/self-sizing branch below - both paths arm the SAME accelerometer,
 	// so there's no need (and no correctness reason) to resend the activation line twice.
 	const runsBefore = await activateAndSnapshotRuns(io, options);
-	const pParam = options.activationCode ? "" : `P${options.accelerometer.id} `;
+	const pParam = options.activationCode ? `P${options.activationSlot ?? 0} ` : `P${options.accelerometer.id} `;
 
 	if (options.samples !== undefined) {
 		await sendChecked(io, `M400 M956 ${pParam}S${options.samples} A0 F"${name}" M98 P"${progPath}"`);
@@ -359,6 +368,8 @@ export interface NativeCaptureOptions {
 	customMoves?: Array<string>;
 	/** See SweepCaptureOptions.activationCode. */
 	activationCode?: string;
+	/** See SweepCaptureOptions.activationSlot. */
+	activationSlot?: number;
 }
 
 /**
@@ -386,7 +397,7 @@ export async function runNativeCapture(io: MachineIO, options: NativeCaptureOpti
 	// execute the profile in one line so recording brackets it.
 	await sendChecked(io, `G1 ${axis}${options.center - span} F${feedrate} M400`);
 	const runsBefore = await activateAndSnapshotRuns(io, options);
-	const pParam = options.activationCode ? "" : `P${options.accelerometer.id} `;
+	const pParam = options.activationCode ? `P${options.activationSlot ?? 0} ` : `P${options.accelerometer.id} `;
 	await sendChecked(io, `M956 ${pParam}S${samples} A0 F"${name}" G4 P300 ${moves.join(" ")} M400`);
 	return {
 		csvPath,
@@ -483,7 +494,7 @@ export async function runFixedExcitation(io: MachineIO, options: SweepCaptureOpt
 	const rate = options.expectedSampleRate ?? 1000;
 	const samples = Math.min(200000, Math.ceil((program.durationSec + 2) * rate));
 	const runsBefore = await activateAndSnapshotRuns(io, options);
-	const pParam = options.activationCode ? "" : `P${options.accelerometer.id} `;
+	const pParam = options.activationCode ? `P${options.activationSlot ?? 0} ` : `P${options.accelerometer.id} `;
 	await sendChecked(io, `M400 M956 ${pParam}S${samples} A0 F"${name}" M98 P"${progPath}"`);
 	return { csvPath, program, accelId: options.accelerometer.id, runsBefore, progPath };
 }
@@ -499,6 +510,8 @@ export interface SpeedPointCaptureOptions {
 	expectedSampleRate?: number;
 	/** See SweepCaptureOptions.activationCode. */
 	activationCode?: string;
+	/** See SweepCaptureOptions.activationSlot. */
+	activationSlot?: number;
 }
 
 /**
@@ -516,7 +529,7 @@ export async function runSpeedPointCapture(io: MachineIO, options: SpeedPointCap
 	const samples = Math.min(200000, Math.ceil(((4 * span) / options.speed) * rate * 1.3));
 	await sendChecked(io, `G1 ${axis}${options.center - span} F30000 M400`);
 	const runsBefore = await activateAndSnapshotRuns(io, options);
-	const pParam = options.activationCode ? "" : `P${options.accelerometer.id} `;
+	const pParam = options.activationCode ? `P${options.activationSlot ?? 0} ` : `P${options.accelerometer.id} `;
 	await sendChecked(io,
 		`M956 ${pParam}S${samples} A0 F"${name}" `
 		+ `G1 ${axis}${options.center + span} F${f} G1 ${axis}${options.center - span} F${f} M400`,
@@ -544,6 +557,8 @@ export interface MotorPointCaptureOptions {
 	roundTrip?: boolean;
 	/** See SweepCaptureOptions.activationCode. */
 	activationCode?: string;
+	/** See SweepCaptureOptions.activationSlot. */
+	activationSlot?: number;
 }
 
 /**
@@ -568,7 +583,7 @@ export async function runMotorPointCapture(io: MachineIO, options: MotorPointCap
 		? `G1 ${axisWords(m, m.end)} F${m.feedrate} G1 ${axisWords(m, m.start)} F${m.feedrate} M400`
 		: `G1 ${axisWords(m, m.end)} F${m.feedrate} M400`;
 	const runsBefore = await activateAndSnapshotRuns(io, options);
-	const pParam = options.activationCode ? "" : `P${options.accelerometer.id} `;
+	const pParam = options.activationCode ? `P${options.activationSlot ?? 0} ` : `P${options.accelerometer.id} `;
 	await sendChecked(io, `M956 ${pParam}S${samples} A0 F"${name}" ${moves}`);
 
 	return {

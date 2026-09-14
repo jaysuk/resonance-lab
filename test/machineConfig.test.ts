@@ -3,8 +3,8 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { AccelerometerRef } from "../src/capture/orchestrator";
 import type { HostAdapter } from "../src/core/host";
 import {
-	applyEditPlan, configPath, findExistingWiring, invalidateGcodeCache, planAccelSave, planShaperSave,
-	restartAfterConfigEdit, tpostPath,
+	applyEditPlan, configPath, findExistingWiring, findStrayTpostAccelLines, invalidateGcodeCache,
+	planAccelMigration, planAccelSave, planShaperSave, restartAfterConfigEdit, tpostPath,
 } from "../src/config/machineConfig";
 
 // findExistingWiring/planAccelSave cache file text keyed by path (see machineConfig.ts), and every
@@ -20,8 +20,51 @@ function accelRef(id: string, toolNumber?: number): AccelerometerRef {
 	return toolNumber === undefined ? { id, label: id } : { id, label: id, toolNumber };
 }
 
-/** A model whose mainboard reports new-scheme firmware, for planAccelSave's new-scheme branch. */
-const NEW_SCHEME_MODEL = { directories: { system: "0:/sys" }, boards: [{ firmwareVersion: "3.7.0-rc.1" }] };
+/**
+ * A model where the mainboard AND every CAN board these tests address (20, 121) report new-scheme
+ * firmware - i.e. a machine fully updated everywhere. firmwareUsesNewAccelScheme checks the SPECIFIC
+ * board a given accelerometer lives on, not boards[0] alone (a remote M955 is forwarded to and parsed
+ * by that board's own, independently-flashed firmware) - see the MIXED_FIRMWARE_MODEL fixture below
+ * for the case where the mainboard is updated but a toolboard isn't.
+ */
+const NEW_SCHEME_MODEL = {
+	directories: { system: "0:/sys" },
+	boards: [
+		{ canAddress: 0, firmwareVersion: "3.7.0-rc.1" },
+		{ canAddress: 20, firmwareVersion: "3.7.0-rc.1" },
+		{ canAddress: 121, firmwareVersion: "3.7.0-rc.1" },
+	],
+};
+
+/**
+ * Mainboard updated to 3.7.0-rc.1+, toolboard 121 still on old firmware (no firmwareVersion new
+ * enough, or a pre-update board reporting e.g. "3.6.0") - the exact real-world configuration behind
+ * the field report this fixture exists to cover: "Tool Board 1LC ... Error M955: missing parameter
+ * 'P'", caused by an earlier version of this code gating on boards[0] alone and omitting P for a
+ * board whose own firmware still required it.
+ */
+const MIXED_FIRMWARE_MODEL = {
+	directories: { system: "0:/sys" },
+	boards: [
+		{ canAddress: 0, firmwareVersion: "3.7.0-rc.1" },
+		{ canAddress: 121, firmwareVersion: "3.5.1" },
+	],
+};
+
+/**
+ * Every board on RRF's multi-accelerometer firmware ("3.7.0-rc.1+1" - up to 10 independent slots,
+ * `RepRapFirmware@ee3c80b`/`Duet3Expansion@73549e0`). Distinct from NEW_SCHEME_MODEL (plain rc.1,
+ * still single-slot) - the two thresholds are independent and this fixture must NOT satisfy the
+ * single-slot-only tests above by accident.
+ */
+const MULTI_ACCEL_MODEL = {
+	directories: { system: "0:/sys" },
+	boards: [
+		{ canAddress: 0, firmwareVersion: "3.7.0-rc.1+1" },
+		{ canAddress: 20, firmwareVersion: "3.7.0-rc.1+1" },
+		{ canAddress: 121, firmwareVersion: "3.7.0-rc.1+1" },
+	],
+};
 
 /** A fake HostAdapter backed by an in-memory file map, so writes/backups are directly inspectable. */
 function fakeHost(files: Record<string, string> = {}, model: unknown = { directories: { system: "0:/sys" } }) {
@@ -91,6 +134,17 @@ describe("planAccelSave - legacy firmware (scope is meaningless, always edits co
 		expect(plan.after).toBe("M955 P121.0 I0\nM955 P122.0 I6");
 	});
 
+	it("explicitly on 3.7.0-beta.3 (last pre-RC build) still uses the old P<board.driver> form, not P0/C", async () => {
+		// The threshold is 3.7.0-rc.1 exactly - anything before it, including the last beta, must take
+		// the legacy path. Confirms the boundary case by name rather than only via an absent boards[]
+		// field (which every other "legacy" test above relies on implicitly).
+		const model = { directories: { system: "0:/sys" }, boards: [{ canAddress: 0, firmwareVersion: "3.7.0-beta.3" }] };
+		const { host } = fakeHost({ "0:/sys/config.g": "M955 P0 I0" }, model);
+		const { plan } = await planAccelSave(host, accelRef("0"), "all", "6");
+		expect(plan.after).toBe("M955 P0 I6");
+		expect(plan.after).not.toContain("C\"");
+	});
+
 	it("flags a commented-out duplicate without treating it as the active one", async () => {
 		const { host } = fakeHost({
 			"0:/sys/config.g": "; M955 P0 I0 ; old wiring\nM955 P0 I0",
@@ -129,7 +183,7 @@ describe("planAccelSave - legacy firmware (scope is meaningless, always edits co
 describe("findExistingWiring", () => {
 	it("finds config.g wiring when no tool is associated", async () => {
 		const { host } = fakeHost({ "0:/sys/config.g": 'M955 C"121.i2c.lis" I6' }, NEW_SCHEME_MODEL);
-		expect(await findExistingWiring(host, accelRef("121.0"))).toEqual({ cSpec: "121.i2c.lis", canAddress: 121 });
+		expect(await findExistingWiring(host, accelRef("121.0"))).toEqual({ cSpec: "121.i2c.lis", canAddress: 121, slot: 0 });
 	});
 
 	it("checks the tool's own tpost<N>.g before config.g", async () => {
@@ -138,7 +192,7 @@ describe("findExistingWiring", () => {
 			"0:/sys/tpost3.g": 'M955 C"121.i2c.lis" I6',
 		}, NEW_SCHEME_MODEL);
 		const wiring = await findExistingWiring(host, accelRef("121.0", 3));
-		expect(wiring).toEqual({ cSpec: "121.i2c.lis", canAddress: 121 });
+		expect(wiring).toEqual({ cSpec: "121.i2c.lis", canAddress: 121, slot: 0 });
 	});
 
 	it("falls back to config.g when the tool's tpost<N>.g has no wiring for this board", async () => {
@@ -146,7 +200,7 @@ describe("findExistingWiring", () => {
 			"0:/sys/config.g": 'M955 C"121.i2c.lis" I6',
 			"0:/sys/tpost3.g": "G28",
 		}, NEW_SCHEME_MODEL);
-		expect(await findExistingWiring(host, accelRef("121.0", 3))).toEqual({ cSpec: "121.i2c.lis", canAddress: 121 });
+		expect(await findExistingWiring(host, accelRef("121.0", 3))).toEqual({ cSpec: "121.i2c.lis", canAddress: 121, slot: 0 });
 	});
 
 	it("returns null when the accelerometer isn't wired anywhere", async () => {
@@ -171,7 +225,9 @@ describe("planAccelSave - new-scheme firmware (>= 3.7.0-rc.1)", () => {
 		const { host } = fakeHost({ "0:/sys/config.g": 'M955 C"121.i2c.lis" Q2000000 I0' }, NEW_SCHEME_MODEL);
 		const { plan, notes } = await planAccelSave(host, accelRef("121.0"), "all", "6");
 		expect(plan.path).toBe("0:/sys/config.g");
-		expect(plan.after).toBe('M955 C"121.i2c.lis" Q2000000 I6');
+		// P0 is appended (the pre-existing line had none) - P0 is still mandatory even under the new
+		// scheme (confirmed on real hardware), so an edit self-heals a line missing it, not just I.
+		expect(plan.after).toBe('M955 C"121.i2c.lis" Q2000000 I6 P0');
 		expect(notes).toHaveLength(0);
 	});
 
@@ -195,7 +251,7 @@ describe("planAccelSave - new-scheme firmware (>= 3.7.0-rc.1)", () => {
 		const { plan, notes } = await planAccelSave(host, accelRef("121.0", 3), "tool", "6");
 		expect(plan.path).toBe("0:/sys/tpost3.g");
 		expect(plan.appended).toBe(true);
-		expect(plan.after).toContain('M955 C"121.i2c.lis" I6');
+		expect(plan.after).toContain('M955 P0 C"121.i2c.lis" I6'); // P0 mandatory even under the new scheme
 		expect(notes).toHaveLength(1); // config.g also has wiring for this board - informational
 		expect(notes[0]).toContain("config.g");
 	});
@@ -206,7 +262,9 @@ describe("planAccelSave - new-scheme firmware (>= 3.7.0-rc.1)", () => {
 			"0:/sys/tpost3.g": 'M955 C"20.spi.cs1" I20\nM955 C"121.i2c.lis" I0',
 		}, NEW_SCHEME_MODEL);
 		const { plan } = await planAccelSave(host, accelRef("121.0", 3), "tool", "6");
-		expect(plan.after).toBe('M955 C"20.spi.cs1" I20\nM955 C"121.i2c.lis" I6');
+		// Only board 121's line is touched (gains P0, self-healing a line that didn't have one) - board
+		// 20's own line is left completely alone.
+		expect(plan.after).toBe('M955 C"20.spi.cs1" I20\nM955 C"121.i2c.lis" I6 P0');
 	});
 
 	it("scope 'tool': throws rather than writing tpost-1.g / tpostundefined.g when there's no usable tool number", async () => {
@@ -222,6 +280,104 @@ describe("planAccelSave - new-scheme firmware (>= 3.7.0-rc.1)", () => {
 		}, NEW_SCHEME_MODEL);
 		const { plan } = await planAccelSave(host, accelRef("121.0", 3), "tool", "6");
 		expect(plan.after).toContain("Q4000000");
+	});
+});
+
+describe("planAccelSave - mixed firmware (mainboard updated, an accelerometer's own board not)", () => {
+	// A CAN toolboard's firmware is flashed and updated independently of the mainboard's, and a remote
+	// M955 is forwarded whole to the board its C prefix names and parsed by THAT board's own firmware -
+	// so the scheme in use has to be decided per-accelerometer, never by boards[0] (the mainboard)
+	// alone. NOTE: this is a general robustness property, not itself the explanation for the "Tool
+	// Board 1LC ... missing parameter 'P'" field report that motivated writing these tests - that
+	// report turned out to be caused by P0 being omitted entirely on RC1 boards on BOTH sides (see the
+	// "P0 is still mandatory" tests below and in the new-scheme describe block above), not by mixed
+	// firmware. Kept because the per-board property is still real and still worth guarding.
+
+	it("uses the LEGACY P-based line for an accelerometer whose own board is still on old firmware", async () => {
+		const { host } = fakeHost({ "0:/sys/config.g": "M955 P121.0 I0" }, MIXED_FIRMWARE_MODEL);
+		const { plan } = await planAccelSave(host, accelRef("121.0"), "all", "6");
+		expect(plan.after).toBe("M955 P121.0 I6");
+		expect(plan.after).not.toContain("C\"");
+	});
+
+	it("still uses the NEW C-based line (with P0) for an accelerometer on the mainboard itself (which IS updated)", async () => {
+		const { host } = fakeHost({ "0:/sys/config.g": 'M955 C"^spi.cs1" I0' }, MIXED_FIRMWARE_MODEL);
+		const { plan } = await planAccelSave(host, accelRef("0"), "all", "6");
+		expect(plan.after).toBe('M955 C"^spi.cs1" I6 P0'); // P0 appended - the pre-existing line had none
+	});
+
+	it("findExistingWiring's lookup is unaffected by firmware - only planAccelSave's SAVE FORMAT depends on it", async () => {
+		// Reading wiring text is pure G-code parsing, independent of which board runs which firmware -
+		// the SAME config.g text resolves identically under either fixture. The bug this suite guards
+		// against was specifically about the FORMAT planAccelSave chooses to WRITE, not about lookup.
+		const configText = 'M955 C"121.i2c.lis" I0';
+		const { host: newHost } = fakeHost({ "0:/sys/config.g": configText }, NEW_SCHEME_MODEL);
+		const { host: mixedHost } = fakeHost({ "0:/sys/config.g": configText }, MIXED_FIRMWARE_MODEL);
+		const expected = { cSpec: "121.i2c.lis", canAddress: 121, slot: 0 };
+		expect(await findExistingWiring(newHost, accelRef("121.0"))).toEqual(expected);
+		expect(await findExistingWiring(mixedHost, accelRef("121.0"))).toEqual(expected);
+	});
+});
+
+describe("planAccelSave - multi-accelerometer firmware (>= 3.7.0-rc.1+1)", () => {
+	it("always saves to config.g, ignoring scope entirely - there is nothing to displace", async () => {
+		const { host } = fakeHost({ "0:/sys/config.g": 'M955 P0 C"121.i2c.lis" I0' }, MULTI_ACCEL_MODEL);
+		const { plan, notes } = await planAccelSave(host, accelRef("121.0"), "tool", "6"); // scope "tool" - ignored
+		expect(plan.path).toBe("0:/sys/config.g");
+		expect(plan.after).toBe('M955 P0 C"121.i2c.lis" I6');
+		expect(notes).toHaveLength(0);
+	});
+
+	it("two different boards can each be saved independently, and neither's line touches the other's", async () => {
+		// Board 121 is discoverable via its own tool's tpost first (R3 - a board can only be saved once
+		// it's discoverable somewhere; it isn't in config.g yet, which is exactly the "new board" case).
+		const { host } = fakeHost({
+			"0:/sys/config.g": 'M955 P0 C"20.spi.cs1" I20',
+			"0:/sys/tpost3.g": 'M955 C"121.i2c.lis" I0',
+		}, MULTI_ACCEL_MODEL);
+		const { plan } = await planAccelSave(host, accelRef("121.0", 3), "all", "6");
+		// Board 20's line is untouched; board 121 is a brand-new addition to config.g at the next free slot (1).
+		expect(plan.after).toContain('M955 P0 C"20.spi.cs1" I20');
+		expect(plan.after).toContain('M955 P1 C"121.i2c.lis" I6');
+		expect(plan.appended).toBe(true);
+	});
+
+	it("a new board is assigned the lowest slot not already used by any other board", async () => {
+		const { host } = fakeHost({
+			"0:/sys/config.g": 'M955 P0 C"20.spi.cs1" I20\nM955 P2 C"22.spi.cs1" I20',
+			"0:/sys/tpost3.g": 'M955 C"121.i2c.lis" I0',
+		}, MULTI_ACCEL_MODEL);
+		const { plan } = await planAccelSave(host, accelRef("121.0", 3), "all", "6");
+		expect(plan.after).toContain('M955 P1 C"121.i2c.lis" I6'); // slot 1 is free even though 0 and 2 are taken
+	});
+
+	it("re-saving an already-configured board reuses its existing slot rather than reassigning it", async () => {
+		const { host } = fakeHost({
+			"0:/sys/config.g": 'M955 P0 C"20.spi.cs1" I20\nM955 P5 C"121.i2c.lis" I0',
+		}, MULTI_ACCEL_MODEL);
+		const { plan } = await planAccelSave(host, accelRef("121.0"), "all", "6");
+		expect(plan.after).toBe('M955 P0 C"20.spi.cs1" I20\nM955 P5 C"121.i2c.lis" I6'); // still slot 5, not reassigned
+	});
+
+	it("pulls in a board's wiring from tpost<N>.g and assigns it a fresh config.g slot, independent of tpost's own P", async () => {
+		// tpost's line predates this scheme and says P0 (the only value that was ever legal there) -
+		// that must not leak into config.g, where slot 0 might already belong to a different board.
+		const { host } = fakeHost({
+			"0:/sys/config.g": 'M955 P0 C"20.spi.cs1" I20',
+			"0:/sys/tpost3.g": 'M955 P0 C"121.i2c.lis" I6',
+		}, MULTI_ACCEL_MODEL);
+		const { plan } = await planAccelSave(host, accelRef("121.0", 3), "all", "6");
+		expect(plan.path).toBe("0:/sys/config.g");
+		expect(plan.after).toContain('M955 P1 C"121.i2c.lis" I6'); // slot 1, not tpost's stale P0
+	});
+
+	it("throws once all 10 slots are already in use", async () => {
+		const lines = Array.from({ length: 10 }, (_, n) => `M955 P${n} C"${n}0.spi.cs1" I20`).join("\n");
+		const { host } = fakeHost({
+			"0:/sys/config.g": lines,
+			"0:/sys/tpost3.g": 'M955 C"121.i2c.lis" I0',
+		}, MULTI_ACCEL_MODEL);
+		await expect(planAccelSave(host, accelRef("121.0", 3), "all", "6")).rejects.toThrow(/10/);
 	});
 });
 
@@ -312,7 +468,7 @@ describe("applyEditPlan", () => {
 
 		// Without invalidating config.g's cache entry, this would still return null (the pre-save text
 		// this test cached above) instead of finding the line applyEditPlan just wrote.
-		expect(await findExistingWiring(host, accelRef("121.0"))).toEqual({ cSpec: "121.i2c.lis", canAddress: 121 });
+		expect(await findExistingWiring(host, accelRef("121.0"))).toEqual({ cSpec: "121.i2c.lis", canAddress: 121, slot: 0 });
 	});
 });
 
@@ -327,5 +483,95 @@ describe("restartAfterConfigEdit", () => {
 		const { host, sent } = fakeHost();
 		await restartAfterConfigEdit(host, "runConfig");
 		expect(sent).toEqual(['M98 P"config.g"']);
+	});
+});
+
+describe("findStrayTpostAccelLines", () => {
+	it("finds a stray M955 line in a tool's own tpost<N>.g", async () => {
+		const { host } = fakeHost({ "0:/sys/tpost0.g": 'M955 P0 C"121.i2c.lis" I6' }, MULTI_ACCEL_MODEL);
+		const found = await findStrayTpostAccelLines(host, [0]);
+		expect(found).toEqual([{ toolNumber: 0, path: "0:/sys/tpost0.g", wiring: { cSpec: "121.i2c.lis", canAddress: 121, slot: 0 } }]);
+	});
+
+	it("scans every tool number given, skipping ones with no tpost file or no M955 in it", async () => {
+		const { host } = fakeHost({
+			"0:/sys/tpost0.g": 'M955 P0 C"121.i2c.lis" I6',
+			"0:/sys/tpost1.g": "G28 ; no accelerometer here",
+			// tpost2.g doesn't exist at all
+		}, MULTI_ACCEL_MODEL);
+		const found = await findStrayTpostAccelLines(host, [0, 1, 2]);
+		expect(found).toHaveLength(1);
+		expect(found[0].toolNumber).toBe(0);
+	});
+
+	it("returns an empty array when no tool has a stray line", async () => {
+		const { host } = fakeHost({}, MULTI_ACCEL_MODEL);
+		expect(await findStrayTpostAccelLines(host, [0, 1, 2])).toEqual([]);
+	});
+});
+
+describe("planAccelMigration", () => {
+	it("two tools each with a stray P0 line migrate to distinct config.g slots", async () => {
+		const { host } = fakeHost({
+			"0:/sys/config.g": "G90",
+			"0:/sys/tpost0.g": 'M955 P0 C"20.spi.cs1" I20',
+			"0:/sys/tpost1.g": 'M955 P0 C"121.i2c.lis" I6',
+		}, MULTI_ACCEL_MODEL);
+		const stray = await findStrayTpostAccelLines(host, [0, 1]);
+		expect(stray).toHaveLength(2);
+		const { removals, additions } = await planAccelMigration(host, stray);
+
+		expect(removals).toHaveLength(2);
+		expect(removals.find((p) => p.path === "0:/sys/tpost0.g")?.after).toBe("");
+		expect(removals.find((p) => p.path === "0:/sys/tpost1.g")?.after).toBe("");
+
+		expect(additions).toHaveLength(2);
+		const configLines = additions[additions.length - 1].after.split("\n").filter((l) => l.startsWith("M955"));
+		expect(configLines).toHaveLength(2);
+		// Distinct slots, each board's own orientation carried over (20 and 6, not reset to identity).
+		expect(configLines.some((l) => l.includes('C"20.spi.cs1" I20'))).toBe(true);
+		expect(configLines.some((l) => l.includes('C"121.i2c.lis" I6'))).toBe(true);
+		const slots = configLines.map((l) => /P(\d+)/.exec(l)![1]);
+		expect(new Set(slots).size).toBe(2); // no collision
+	});
+
+	it("a tool with no stray line is left alone - findStrayTpostAccelLines simply never reports it", async () => {
+		const { host } = fakeHost({ "0:/sys/tpost0.g": 'M955 P0 C"121.i2c.lis" I6', "0:/sys/tpost1.g": "G28" }, MULTI_ACCEL_MODEL);
+		const stray = await findStrayTpostAccelLines(host, [0, 1]);
+		expect(stray.map((s) => s.toolNumber)).toEqual([0]);
+	});
+
+	it("a tpost file with an unrelated directive keeps everything but the M955 line", async () => {
+		const { host } = fakeHost({
+			"0:/sys/config.g": "G90",
+			"0:/sys/tpost0.g": 'G28\nM955 P0 C"121.i2c.lis" I6\nM106 S1',
+		}, MULTI_ACCEL_MODEL);
+		const stray = await findStrayTpostAccelLines(host, [0]);
+		const { removals } = await planAccelMigration(host, stray);
+		expect(removals[0].after).toBe("G28\nM106 S1");
+	});
+
+	it("re-running the scan after migration finds nothing left", async () => {
+		const { host, fs } = fakeHost({
+			"0:/sys/config.g": "G90",
+			"0:/sys/tpost0.g": 'M955 P0 C"121.i2c.lis" I6',
+		}, MULTI_ACCEL_MODEL);
+		const stray = await findStrayTpostAccelLines(host, [0]);
+		const { removals, additions } = await planAccelMigration(host, stray);
+		for (const plan of [...removals, ...additions]) {
+			await applyEditPlan(host, plan);
+		}
+		expect(fs.get("0:/sys/tpost0.g")).toBe("");
+		expect(await findStrayTpostAccelLines(host, [0])).toEqual([]);
+	});
+
+	it("reuses a board's existing config.g slot rather than assigning a new one, if it already has one there", async () => {
+		const { host } = fakeHost({
+			"0:/sys/config.g": 'M955 P5 C"121.i2c.lis" I0',
+			"0:/sys/tpost3.g": 'M955 P0 C"121.i2c.lis" I6', // stray leftover, but config.g already claims slot 5
+		}, MULTI_ACCEL_MODEL);
+		const stray = await findStrayTpostAccelLines(host, [3]);
+		const { additions } = await planAccelMigration(host, stray);
+		expect(additions[0].after).toBe('M955 P5 C"121.i2c.lis" I6'); // still slot 5, orientation updated
 	});
 });

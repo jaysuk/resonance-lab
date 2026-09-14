@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
-	appendDirective, detectEol, diffLines, findDirectives, parseLines, replaceDirective, replaceLine,
-	serializeLines, setParam,
+	appendDirective, detectEol, diffLines, findDirectives, parseLines, removeDirective, replaceDirective,
+	replaceLine, serializeLines, setParam,
 } from "../src/config/gcodeEdit";
 
 describe("parseLines", () => {
@@ -148,6 +148,26 @@ describe("replaceLine", () => {
 		expect(edited[1].params.I).toBe("20");
 		expect(edited[0]).toBe(lines[0]); // untouched lines keep their identity, not just equal content
 		expect(edited[2]).toBe(lines[2]);
+	});
+});
+
+describe("removeDirective", () => {
+	it("deletes exactly the named line, leaving every other line's identity untouched", () => {
+		const lines = parseLines('G90\nM955 P0 C"121.i2c.lis" I6\nM84 S60');
+		const after = removeDirective(lines, 1);
+		expect(after.map((l) => l.raw)).toEqual(["G90", "M84 S60"]);
+		expect(after[0]).toBe(lines[0]);
+		expect(after[1]).toBe(lines[2]);
+	});
+
+	it("leaves an audit comment ABOVE the removed line in place - only the directive itself is deleted", () => {
+		const lines = parseLines('; Resonance Lab 2026-09-09\nM955 P0 C"121.i2c.lis" I6');
+		const after = removeDirective(lines, 1);
+		expect(after.map((l) => l.raw)).toEqual(["; Resonance Lab 2026-09-09"]);
+	});
+
+	it("removing the only line leaves an empty result", () => {
+		expect(removeDirective(parseLines('M955 P0 C"121.i2c.lis" I6'), 0)).toEqual([]);
 	});
 });
 

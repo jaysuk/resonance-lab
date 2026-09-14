@@ -176,6 +176,81 @@
 				</v-card-actions>
 			</v-card>
 		</v-dialog>
+		<!-- Consolidate stray tpost<N>.g M955 lines into config.g (multi-accelerometer firmware, R -
+			 see CLAUDE.md's single-accelerometer-activation notes): every pre-existing "this tool only"
+			 accelerometer save wrote a full M955 line with P0 into that tool's own tpost<N>.g, which under
+			 the new multi-slot scheme silently reassigns slot 0 away from whatever config.g just set. -->
+		<v-alert v-if="migrationBannerVisible" type="warning" variant="tonal" density="compact" class="mx-3 mb-2">
+			<div class="d-flex align-center ga-2 flex-wrap">
+				<span class="flex-grow-1">{{ $t("plugins.resonanceLab.migration.banner", { count: strayAccelLines.length }) }}</span>
+				<v-btn variant="tonal" size="small" @click="openMigrationDialog">{{ $t("plugins.resonanceLab.migration.review") }}</v-btn>
+				<v-btn variant="text" size="small" @click="dismissMigrationBanner">{{ $t("plugins.resonanceLab.migration.dismiss") }}</v-btn>
+			</div>
+		</v-alert>
+
+		<!-- Consolidation preview: strike every stray line out of its tpost<N>.g, add each board to
+			 config.g with its own slot - one diff block per affected file, same styling as the single-file
+			 config.g/tpost<N>.g dialog above. -->
+		<v-dialog v-model="migrationDialogOpen" max-width="640" scrollable persistent>
+			<v-card v-if="migrationPlan">
+				<v-card-title class="d-flex align-center">
+					<v-icon class="me-2">mdi-file-document-edit-outline</v-icon>
+					<span class="flex-grow-1">{{ $t("plugins.resonanceLab.migration.title") }}</span>
+				</v-card-title>
+				<v-card-text style="max-height: 55vh">
+					<template v-if="!migrationSaved">
+						<div class="text-body-2 text-medium-emphasis mb-3">
+							{{ $t("plugins.resonanceLab.migration.body", { from: migrationFileNames.from.join(", "), to: migrationFileNames.to }) }}
+						</div>
+						<template v-for="(plan, i) in migrationPlan.removals" :key="'rm' + i">
+							<div class="text-caption text-medium-emphasis mb-1">{{ plan.path }}</div>
+							<div class="rlab-gcode-preview rlab-config-diff mb-3">
+								<div v-for="(d, j) in plan.diff" :key="j"
+									 :style="{
+										 color: d.type === 'added' ? '#4caf50' : d.type === 'removed' ? '#f44336' : 'inherit',
+										 textDecoration: d.type === 'removed' ? 'line-through' : 'none',
+										 opacity: d.type === 'same' ? 0.55 : 1,
+									 }">{{ (d.type === "added" ? "+ " : d.type === "removed" ? "- " : "  ") + d.text }}</div>
+							</div>
+						</template>
+						<template v-for="(plan, i) in migrationPlan.additions" :key="'add' + i">
+							<div class="text-caption text-medium-emphasis mb-1">{{ plan.path }}</div>
+							<div class="rlab-gcode-preview rlab-config-diff mb-3">
+								<div v-for="(d, j) in plan.diff" :key="j"
+									 :style="{
+										 color: d.type === 'added' ? '#4caf50' : d.type === 'removed' ? '#f44336' : 'inherit',
+										 textDecoration: d.type === 'removed' ? 'line-through' : 'none',
+										 opacity: d.type === 'same' ? 0.55 : 1,
+									 }">{{ (d.type === "added" ? "+ " : d.type === "removed" ? "- " : "  ") + d.text }}</div>
+							</div>
+						</template>
+						<div class="text-caption text-medium-emphasis mt-1">{{ $t("plugins.resonanceLab.config.backupNote") }}</div>
+						<v-alert v-if="migrationDialogError" type="error" variant="tonal" density="compact" class="mt-3">{{ migrationDialogError }}</v-alert>
+					</template>
+					<template v-else>
+						<v-alert type="success" variant="tonal" density="compact" class="mb-3">{{ $t("plugins.resonanceLab.migration.applied") }}</v-alert>
+						<div class="text-subtitle-2 mb-1">{{ $t("plugins.resonanceLab.config.restartTitle") }}</div>
+						<div class="text-body-2 text-medium-emphasis mb-3">{{ $t("plugins.resonanceLab.config.restartHint") }}</div>
+					</template>
+				</v-card-text>
+				<v-card-actions>
+					<template v-if="!migrationSaved">
+						<v-btn variant="text" @click="closeMigrationDialog">{{ $t("plugins.resonanceLab.config.cancel") }}</v-btn>
+						<v-spacer />
+						<v-btn color="primary" variant="tonal" :loading="migrationDialogBusy" @click="confirmMigration">
+							{{ $t("plugins.resonanceLab.migration.confirm") }}
+						</v-btn>
+					</template>
+					<template v-else>
+						<v-btn variant="text" @click="closeMigrationDialog">{{ $t("plugins.resonanceLab.config.skipRestart") }}</v-btn>
+						<v-spacer />
+						<v-btn variant="tonal" @click="restartAfterMigration('runConfig')">{{ $t("plugins.resonanceLab.config.runConfigNow") }}</v-btn>
+						<v-btn color="primary" variant="tonal" @click="restartAfterMigration('reset')">{{ $t("plugins.resonanceLab.config.restartNow") }}</v-btn>
+					</template>
+				</v-card-actions>
+			</v-card>
+		</v-dialog>
+
 		<v-divider />
 
 		<div class="d-flex flex-grow-1" style="min-height: 0">
@@ -767,6 +842,19 @@ const {
 	confirmConfigSave,
 	restartAfterSave,
 	closeConfigDialog,
+	migrationBannerVisible,
+	dismissMigrationBanner,
+	strayAccelLines,
+	migrationDialogOpen,
+	migrationDialogBusy,
+	migrationDialogError,
+	migrationPlan,
+	migrationSaved,
+	migrationFileNames,
+	openMigrationDialog,
+	confirmMigration,
+	restartAfterMigration,
+	closeMigrationDialog,
 	model,
 } = useResonanceLab(createHost());
 </script>

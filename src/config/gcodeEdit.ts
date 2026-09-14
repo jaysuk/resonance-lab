@@ -200,6 +200,15 @@ export function replaceLine(lines: Array<GcodeLine>, index: number, raw: string)
 	return lines.map((l, i) => (i === index ? parseLine(raw) : l));
 }
 
+/** Delete one line by index outright, leaving every other line (including any comment ABOVE it, such
+ *  as an audit stamp this module itself appended) untouched. Unlike every other editing function here,
+ *  this removes a directive entirely rather than replacing or adding one - for migrating a directive
+ *  out of a file it no longer belongs in (e.g. a stray M955 in a tpost<N>.g being consolidated back
+ *  into config.g), not for any of the edit-in-place/append flows above. */
+export function removeDirective(lines: Array<GcodeLine>, index: number): Array<GcodeLine> {
+	return lines.filter((_, i) => i !== index);
+}
+
 export interface DiffLine { type: "same" | "added" | "removed"; text: string }
 
 /**

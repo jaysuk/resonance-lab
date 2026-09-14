@@ -7,11 +7,13 @@
  */
 import type { AccelerometerRef } from "../capture/orchestrator";
 import type { HostAdapter } from "../core/host";
-import { findAccelWiring, findOtherAccelWiring, parseCPrefix, type AccelWiring } from "./accelWiring";
-import { firmwareAtLeast, MIN_ACCEL_FIRMWARE } from "./firmwareVersion";
 import {
-	appendDirective, detectEol, diffLines, findDirectives, parseLines, replaceDirective, replaceLine,
-	serializeLines, setParam, type DiffLine, type GcodeLine,
+	findAccelWiring, findAllAccelWiring, findOtherAccelWiring, parseCPrefix, type AccelWiring,
+} from "./accelWiring";
+import { firmwareAtLeast, MIN_ACCEL_FIRMWARE, MIN_MULTI_ACCEL_FIRMWARE } from "./firmwareVersion";
+import {
+	appendDirective, detectEol, diffLines, findDirectives, parseLines, replaceDirective,
+	replaceLine, serializeLines, setParam, type DiffLine, type GcodeLine,
 } from "./gcodeEdit";
 
 /** Same-day, sortable audit stamp for a "; Resonance Lab <date>" comment above an appended directive. */
@@ -143,15 +145,57 @@ async function getGcodeText(path: string, read: () => Promise<string>): Promise<
 }
 
 /**
- * Same threshold and same field (`boards[0].firmwareVersion`) as useResonanceLab.ts's own
- * `usesNewAccelScheme` reactive computed - re-derived here, under a deliberately different name,
- * because this module takes `host` as a plain argument rather than a live store binding, so the two
- * are never confused for the same binding.
+ * Whether THIS SPECIFIC accelerometer's own board (`canAddress`, 0 = mainboard) runs firmware new
+ * enough for the single-accelerometer scheme - NOT `boards[0]` alone. A remote `M955` is forwarded
+ * whole to the board its `C` prefix names and parsed by THAT board's own firmware, which is flashed
+ * independently of the mainboard's, so gating on the mainboard alone (an earlier version of this
+ * function did exactly that) can build a P-omitted line for a toolboard that hasn't been updated yet
+ * - confirmed against a real field report ("Tool Board 1LC ... Error M955: missing parameter 'P'")
+ * where the mainboard had been updated to 3.7.0-rc.1+ but that toolboard had not. Same threshold and
+ * mirrors useResonanceLab.ts's own `usesNewAccelSchemeFor`, re-derived here under a deliberately
+ * different name because this module takes `host` as a plain argument, not a live store binding.
  */
-function firmwareUsesNewAccelScheme(host: HostAdapter): boolean {
-	const main = (host.model() as { boards?: Array<{ firmwareVersion?: string } | null> } | null)
-		?.boards?.[0]?.firmwareVersion ?? null;
-	return firmwareAtLeast(main, MIN_ACCEL_FIRMWARE);
+function firmwareUsesNewAccelScheme(host: HostAdapter, canAddress: number): boolean {
+	const boards = (host.model() as { boards?: Array<{ canAddress?: number | null; firmwareVersion?: string } | null> } | null)?.boards ?? [];
+	const fw = boards.find((b) => b && (b.canAddress ?? 0) === canAddress)?.firmwareVersion ?? null;
+	return firmwareAtLeast(fw, MIN_ACCEL_FIRMWARE);
+}
+
+/**
+ * Whether THIS SPECIFIC board's own firmware supports RRF's multi-accelerometer scheme (up to 10
+ * independent slots - `RepRapFirmware@ee3c80b`/`Duet3Expansion@73549e0`, `"3.7.0-rc.1+1"`), NOT just
+ * the single-slot scheme `firmwareUsesNewAccelScheme` checks. A board can satisfy that one without
+ * this one (plain rc.1) - the two thresholds are independent, mirroring
+ * `MIN_ACCEL_FIRMWARE`/`MIN_MULTI_ACCEL_FIRMWARE` being separate constants for the same reason.
+ */
+function firmwareSupportsMultiAccel(host: HostAdapter, canAddress: number): boolean {
+	const boards = (host.model() as { boards?: Array<{ canAddress?: number | null; firmwareVersion?: string } | null> } | null)?.boards ?? [];
+	const fw = boards.find((b) => b && (b.canAddress ?? 0) === canAddress)?.firmwareVersion ?? null;
+	return firmwareAtLeast(fw, MIN_MULTI_ACCEL_FIRMWARE);
+}
+
+/** Every accelerometer slot (M955's P value) already claimed by an active M955 C line in this text -
+ *  reuses `findAllAccelWiring`'s parsing rather than re-deriving it, since `AccelWiring.slot` already
+ *  carries exactly this. */
+function usedSlots(gcodeText: string): Set<number> {
+	return new Set(findAllAccelWiring(gcodeText).map((w) => w.slot));
+}
+
+/**
+ * The lowest slot (0-9) not already claimed in `configText`, additionally excluding anything in
+ * `alsoExclude` - needed when assigning several NEW boards' slots in one batch (Step 5's migration),
+ * where each board's assignment must avoid every OTHER board's assignment in the same batch, not just
+ * whatever config.g already had before the batch started. Throws if all 10 are taken (RRF's own
+ * `MaxAccelerometers` cap - R4).
+ */
+function lowestFreeSlot(configText: string, alsoExclude: ReadonlySet<number> = new Set()): number {
+	const used = usedSlots(configText);
+	for (let n = 0; n < 10; n++) {
+		if (!used.has(n) && !alsoExclude.has(n)) {
+			return n;
+		}
+	}
+	throw new Error("All 10 accelerometer slots are already in use.");
 }
 
 /**
@@ -232,8 +276,10 @@ function accelLineForBoard(canAddress: number): (line: GcodeLine) => boolean {
 /**
  * Preview persisting an accelerometer's orientation - and, on new-scheme firmware, its wiring too -
  * so it survives a reboot. There is no orientation-only save once R1 applies: reconfiguring an
- * accelerometer (M955 C"...") resets orientation unless resupplied in the SAME command, so the
- * persisted line is always the complete `M955 C"..." I<n>`, and where it goes (config.g machine-wide,
+ * accelerometer (M955 P0 C"...") resets orientation unless resupplied in the SAME command, so the
+ * persisted line is always the complete `M955 P0 C"..." I<n>` - P0 is still mandatory even under the
+ * new scheme (confirmed on real hardware; the RRF changelog's "zero or omitted" is not accurate to
+ * the actual implementation, which requires the token present) - and where it goes (config.g machine-wide,
  * vs. one tool's own `tpost<N>.g`) is always the caller's explicit choice - see R9, never inferred
  * from whether `accel.toolNumber` happens to be set.
  *
@@ -246,7 +292,7 @@ export async function planAccelSave(
 	const canAddress = parseInt(accel.id, 10) || 0; // "121.0" -> 121, "0" -> 0
 	const notes: Array<string> = [];
 
-	if (!firmwareUsesNewAccelScheme(host)) {
+	if (!firmwareUsesNewAccelScheme(host, canAddress)) {
 		const path = configPath(host);
 		const text = await readConfig(host);
 		const plan = buildPlan(
@@ -264,12 +310,35 @@ export async function planAccelSave(
 		throw new Error("This accelerometer's wiring isn't recorded anywhere yet - run the orientation task with it active first.");
 	}
 
+	if (firmwareSupportsMultiAccel(host, canAddress)) {
+		// Multi-slot (RRF >= 3.7.0-rc.1+1): always config.g, never a scope choice. Each board has its
+		// OWN slot now, so saving one can never displace another - the entire reason the scope dialog
+		// exists below (R9, single-accelerometer plan) doesn't apply here. `scope` is accepted for a
+		// uniform call signature across all three eras but is otherwise ignored, same as the legacy
+		// branch above ignoring it for the opposite reason (no slots to choose between at all).
+		const configText = await readConfig(host);
+		// Reuse this board's EXISTING config.g slot if it already has one there - never reassign a
+		// board's slot on a routine orientation update. Only a board with no config.g entry yet (its
+		// wiring was found via tpost, or this is its first-ever save) gets a freshly assigned slot.
+		const existingConfigWiring = findAccelWiring(configText, canAddress);
+		const slot = existingConfigWiring?.slot ?? lowestFreeSlot(configText);
+		const newLine = `M955 P${slot} C"${wiring.cSpec}" I${orientation}${wiring.spiFrequency ? ` Q${wiring.spiFrequency}` : ""}`;
+		const isThisBoard = accelLineForBoard(canAddress);
+		const plan = buildPlan(configPath(host), configText, "M955", isThisBoard, (raw) => setParam(raw, "I", orientation), newLine);
+		return { plan, notes }; // no displacement note possible - nothing is displaced (each board keeps its own slot)
+	}
+
 	// R/S deliberately omitted: they're the CURRENT session's sampling settings, which each capture
 	// sets for itself in its own activation line. Persisting them would freeze one task's rate into
 	// config.g as a machine default. C + I + Q is the durable wiring+orientation; nothing else.
-	const newLine = `M955 C"${wiring.cSpec}" I${orientation}${wiring.spiFrequency ? ` Q${wiring.spiFrequency}` : ""}`;
+	const newLine = `M955 P0 C"${wiring.cSpec}" I${orientation}${wiring.spiFrequency ? ` Q${wiring.spiFrequency}` : ""}`;
 	const configText = await readConfig(host);
 	const isThisBoard = accelLineForBoard(canAddress);
+	// Editing an EXISTING line also ensures P0 is present, not just I - a line saved by a version of
+	// this plugin before P0 was known to be mandatory would otherwise stay broken (RRF requires it on
+	// config.g's own boot-time M955 too, independent of anything this plugin sends at runtime)
+	// forever, even after upgrading. setParam appends the token if the line doesn't have it yet.
+	const editLine = (raw: string) => setParam(setParam(raw, "P", "0"), "I", orientation);
 
 	if (scope === "all") {
 		const configHasOther = findOtherAccelWiring(configText, canAddress);
@@ -280,7 +349,7 @@ export async function planAccelSave(
 				+ "reactivating (by resonance-lab, or its own tpost) before it's usable again.",
 			);
 		}
-		const plan = buildPlan(configPath(host), configText, "M955", isThisBoard, (raw) => setParam(raw, "I", orientation), newLine);
+		const plan = buildPlan(configPath(host), configText, "M955", isThisBoard, editLine, newLine);
 		return { plan, notes };
 	}
 
@@ -300,8 +369,141 @@ export async function planAccelSave(
 	}
 	// isThisBoard, NOT an unconditional match: tpost<N>.g may already carry an unrelated board's
 	// M955, and matching that one would rewrite ANOTHER accelerometer's orientation.
-	const plan = buildPlan(tpostPath(host, toolNumber), tpostText, "M955", isThisBoard, (raw) => setParam(raw, "I", orientation), newLine);
+	const plan = buildPlan(tpostPath(host, toolNumber), tpostText, "M955", isThisBoard, editLine, newLine);
 	return { plan, notes };
+}
+
+// ── Migrating stray tpost<N>.g M955 lines into config.g (RRF >= 3.7.0-rc.1+1) ───────────────────
+// Every "this tool only" save before this scheme existed wrote a full M955 line into that tool's own
+// tpost<N>.g - and under the single-slot scheme, P could only ever be 0, so EVERY such line, for every
+// tool, says P0. On a machine upgraded to multi-accelerometer firmware, picking up any of those tools
+// re-sends that stale P0, silently reassigning slot 0 away from whatever config.g assigned there -
+// with no error, just quietly wrong data the next time captures run on whichever tool lost the race.
+// This is a real hazard on EXISTING installs, not just new ones, and must be offered proactively.
+
+/** Every line matching `code`+predicate deleted outright from `beforeText`, in one plan - unlike
+ *  `buildPlan`, never edits-in-place or appends. `diffLines` (the general index-walking differ) is
+ *  NOT used here: removing a line shifts every later line's index, which `diffLines` assumes never
+ *  happens (its own doc comment: before/after differ only by an edited line and/or an appended one).
+ *  The diff is instead built directly against the KNOWN removed indices, which is exact by
+ *  construction and needs no realignment logic at all. */
+function buildRemovalPlan(path: string, beforeText: string, match: (line: GcodeLine) => boolean): DirectiveEditPlan {
+	const before = parseLines(beforeText);
+	const removedIndices = new Set(
+		before.map((l, i) => i).filter((i) => before[i].code === "M955" && !before[i].disabled && match(before[i])),
+	);
+	if (removedIndices.size === 0) {
+		return { path, before: beforeText, after: beforeText, diff: [], appended: false, disabledDuplicateFound: false };
+	}
+	const after = before.filter((_, i) => !removedIndices.has(i));
+	const diff: Array<DiffLine> = before.map((l, i) => (
+		removedIndices.has(i) ? { type: "removed", text: l.raw } : { type: "same", text: l.raw }
+	));
+	return {
+		path, before: beforeText, after: serializeLines(after, detectEol(beforeText)),
+		diff, appended: false, disabledDuplicateFound: false,
+	};
+}
+
+/** The line's own I value (quotes stripped, if it were ever quoted) - "20" (identity) when the line
+ *  has none. A one-time carry-over for migration only: reads config.g/tpost's I directly, which R4
+ *  elsewhere in this codebase deliberately does NOT trust as an ongoing source of truth (the
+ *  orientation registry is) - here there is no registry entry to prefer yet, since this board has
+ *  never been reactivated by this plugin under the multi-slot scheme, so the file's own last-written
+ *  value is the only thing worth preserving rather than silently resetting to identity. */
+function orientationOf(gcodeText: string, canAddress: number): string {
+	const line = parseLines(gcodeText).find((l) => (
+		l.code === "M955" && !l.disabled && !l.unsafe && l.params.C !== undefined
+		&& parseCPrefix(l.params.C.replace(/^"|"$/g, "")) === canAddress
+	));
+	const rawI = line?.params.I;
+	return rawI !== undefined ? rawI.replace(/^"|"$/g, "") : "20";
+}
+
+export interface StrayAccelLine {
+	toolNumber: number;
+	path: string;
+	wiring: AccelWiring;
+}
+
+/**
+ * Every active M955 C line found in any of `toolNumbers`' own tpost<N>.g files - a migration
+ * candidate list, not scoped to one board (see `findAllAccelWiring`). Read-only; never removes
+ * anything itself (`planAccelMigration` does that, once the user has reviewed and confirmed it).
+ */
+export async function findStrayTpostAccelLines(host: HostAdapter, toolNumbers: Array<number>): Promise<Array<StrayAccelLine>> {
+	const found: Array<StrayAccelLine> = [];
+	for (const n of toolNumbers) {
+		const text = await readTpostOrEmpty(host, n);
+		for (const wiring of findAllAccelWiring(text)) {
+			found.push({ toolNumber: n, path: tpostPath(host, n), wiring });
+		}
+	}
+	return found;
+}
+
+export interface AccelMigrationPlan {
+	/** One removal plan per affected tpost<N>.g file (all of that file's stray lines removed together). */
+	removals: Array<DirectiveEditPlan>;
+	/** One addition/edit plan per board, into config.g, each with its own slot. */
+	additions: Array<DirectiveEditPlan>;
+}
+
+/**
+ * Build the full migration: strike every stray line out of its own tpost<N>.g, and ensure each
+ * board's wiring exists in config.g with a slot of its own - reusing an existing config.g slot for
+ * that board if it already has one there, else the lowest slot free across BOTH config.g and every
+ * other board in this same batch (so two boards being migrated together never claim the same slot).
+ * Orientation is carried over from each stray line's own I value where present (`orientationOf`),
+ * defaulting to identity otherwise - migrating shouldn't silently reset an already-solved orientation.
+ * A pure preview, same as every other `plan*` function here - nothing is written until the caller
+ * applies each returned plan (`applyEditPlan`) after showing them to the user.
+ */
+export async function planAccelMigration(host: HostAdapter, strayLines: Array<StrayAccelLine>): Promise<AccelMigrationPlan> {
+	const removals: Array<DirectiveEditPlan> = [];
+	const additions: Array<DirectiveEditPlan> = [];
+
+	// One removal plan per affected FILE, even if that file has more than one stray line - not one
+	// plan per stray line, so the diff shown to the user reads as "here's everything changing in this
+	// file" rather than several overlapping partial diffs of the same file. Text is read once per
+	// file and kept (tpostTextByTool) so the addition loop below can read each stray line's ORIGINAL
+	// orientation without a second file transfer for the same path.
+	const byTool = new Map<number, Array<StrayAccelLine>>();
+	for (const line of strayLines) {
+		const list = byTool.get(line.toolNumber) ?? [];
+		list.push(line);
+		byTool.set(line.toolNumber, list);
+	}
+	const tpostTextByTool = new Map<number, string>();
+	for (const [toolNumber, linesInFile] of byTool) {
+		const tpostText = await readTpostOrEmpty(host, toolNumber);
+		tpostTextByTool.set(toolNumber, tpostText);
+		const boards = new Set(linesInFile.map((l) => l.wiring.canAddress));
+		const matchAnyStrayBoard = (line: GcodeLine): boolean => {
+			const c = line.params.C;
+			return c !== undefined && boards.has(parseCPrefix(c.replace(/^"|"$/g, "")));
+		};
+		removals.push(buildRemovalPlan(tpostPath(host, toolNumber), tpostText, matchAnyStrayBoard));
+	}
+
+	// One addition per board into config.g. `configText` and `assignedThisBatch` both accumulate
+	// across the loop (not re-read/reset per board) so slot assignment sees every EARLIER board in
+	// this same batch, not just what config.g looked like before the batch started.
+	let configText = await readConfig(host);
+	const assignedThisBatch = new Set<number>();
+	for (const { toolNumber, wiring } of strayLines) {
+		const existing = findAccelWiring(configText, wiring.canAddress);
+		const slot = existing?.slot ?? lowestFreeSlot(configText, assignedThisBatch);
+		assignedThisBatch.add(slot);
+		const orientation = orientationOf(tpostTextByTool.get(toolNumber) ?? "", wiring.canAddress);
+		const newLine = `M955 P${slot} C"${wiring.cSpec}" I${orientation}${wiring.spiFrequency ? ` Q${wiring.spiFrequency}` : ""}`;
+		const isThisBoard = accelLineForBoard(wiring.canAddress);
+		const plan = buildPlan(configPath(host), configText, "M955", isThisBoard, (raw) => setParam(raw, "I", orientation), newLine);
+		additions.push(plan);
+		configText = plan.after; // next board's lowestFreeSlot/edit-vs-append must see this one's addition
+	}
+
+	return { removals, additions };
 }
 
 /** Back up the original file, then write the edited one. No-op if the plan turned out to change

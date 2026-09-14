@@ -45,9 +45,10 @@ describe("vibration profile", () => {
 		expect(run.program.durationSec).toBeGreaterThan(0);
 	});
 
-	it("sends the activation line, THEN samples the run counter, THEN arms with P omitted", async () => {
-		// M955 C"..." (RRF >= 3.7.0-rc.1) deletes and recreates the accelerometer object, resetting its
-		// run counter - sampling runsBefore before activating would snapshot the wrong object's count.
+	it("sends the activation line, THEN samples the run counter, THEN arms with P0 (not the old board.driver id)", async () => {
+		// M955 P0 C"..." (RRF >= 3.7.0-rc.1) deletes and recreates the accelerometer object, resetting
+		// its run counter - sampling runsBefore before activating would snapshot the wrong object's
+		// count. P0 is mandatory (gb.MustSee) in both M955 and M956 under this scheme.
 		const order: Array<string> = [];
 		const io: MachineIO = {
 			sendCode: async (code) => { order.push(`send:${code}`); return "ok"; },
@@ -57,11 +58,28 @@ describe("vibration profile", () => {
 		};
 		await runSpeedPointCapture(io, {
 			accelerometer: { id: "121.0", label: "T0" }, axis: "x", center: 150, speed: 120,
-			activationCode: 'M955 C"121.i2c.lis" I6',
+			activationCode: 'M955 P0 C"121.i2c.lis" I6',
 		});
 		expect(order[0]).toContain("G1 X"); // positioning move first
-		expect(order[1]).toBe('send:M955 C"121.i2c.lis" I6');
+		expect(order[1]).toBe('send:M955 P0 C"121.i2c.lis" I6');
 		expect(order[2]).toBe("accelRuns");
+		expect(order[3]).toContain("M956 P0 ");
 		expect(order[3]).not.toContain("P121.0");
+	});
+
+	it("arms with activationSlot's own slot number under the multi-accelerometer scheme (RRF >= 3.7.0-rc.1+1)", async () => {
+		const order: Array<string> = [];
+		const io: MachineIO = {
+			sendCode: async (code) => { order.push(`send:${code}`); return "ok"; },
+			upload: async () => {},
+			download: async () => "",
+			accelRuns: () => 0,
+		};
+		await runSpeedPointCapture(io, {
+			accelerometer: { id: "121.0", label: "T0" }, axis: "x", center: 150, speed: 120,
+			activationCode: 'M955 P5 C"121.i2c.lis" I6', activationSlot: 5,
+		});
+		const armLine = order.find((o) => o.includes("M956"))!;
+		expect(armLine).toContain("M956 P5 ");
 	});
 });
