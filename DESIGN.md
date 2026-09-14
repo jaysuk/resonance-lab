@@ -84,6 +84,31 @@ scope-choice mechanism the shaper (`M593`) save already has, but with independen
 `M593` "all tools" default coexists peacefully with any per-tool override, where an `M955` "all tools"
 save is the *only* thing keeping any other accelerometer active at all.
 
+## Multi-accelerometer support (RRF ≥3.7.0-rc.1+1)
+
+A later RepRapFirmware revision (reported version string `3.7.0-rc.1+1`) raises the accelerometer limit
+from 1 to 10: `M955`'s `P` now selects one of up to 10 independent slots rather than being pinned to
+`0`, so up to 10 *different* boards can each hold their own slot and stay active simultaneously (a
+single board still gets only one slot — RRF itself rejects reusing a board across two). Everything
+above this section still applies verbatim to firmware between `3.7.0-rc.1` and this version; this
+section only covers what changes once a board is on `3.7.0-rc.1+1` or later.
+
+- **The slot number is invisible to the object model, same as the wiring string above** — it exists
+  only as the `P` value in that board's own `M955` line in config.g/`tpost<N>.g`. The plugin discovers
+  it the same way it discovers wiring: by reading the line back, never by inventing or caching a number
+  independently of what's actually on disk.
+- **Saving skips the config.g-vs-tool choice entirely** on this firmware. Each board now gets its own
+  independent slot in config.g, so the single-slot era's real dilemma (only one board can be the
+  boot-time default; everyone else needs a per-tool reassert) doesn't exist any more — there's no
+  second meaningful destination left to offer, so the dialog is never opened for these boards.
+- **Migration for tool-changers upgrading from the single-slot era.** Every pre-existing "this tool
+  only" save wrote a full `M955 P0 C"..."` line into that tool's own `tpost<N>.g`, because `P` could
+  only ever be `0` back then. Left in place, picking up that tool on the new firmware still resends
+  literally `P0` — silently reassigning slot 0 away from whatever config.g just assigned there, with no
+  error. The plugin detects stray tpost lines like this on a tool-changer once any board is running the
+  new firmware, and offers a one-time consolidation: strike the lines out of their tpost files and add
+  each board into config.g with its own slot instead, carrying over each line's last-set orientation.
+
 ## Analysis core (`src/analysis/`, pure TS, no Vue, fully unit-tested)
 
 - `fft.ts` — radix-2 FFT.

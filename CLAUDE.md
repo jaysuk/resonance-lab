@@ -112,14 +112,53 @@ first if only the 3.6 build breaks after adding a new shared module.
   the firmware repo proves nothing, since generic CAN commands are table-driven in CANlib).
 - **Single-accelerometer activation (RRF ≥3.7.0-rc.1, `src/config/accelWiring.ts`,
   `src/config/firmwareVersion.ts`'s `MIN_ACCEL_FIRMWARE`)** — `81d68e1` collapsed `M955`/`M956` to
-  exactly one active accelerometer machine-wide: `P` must be 0/omitted, `C` (with an optional
-  `<canAddress>.` prefix) is mandatory in `M955`, and **every `M955 C"..."` — local or remote — deletes
-  and recreates the accelerometer object**, resetting orientation to identity unless `I` is resupplied
-  in the *same* command (`I` is now only ever read inside the `gb.Seen('C')` branch — a bare
-  `M955 P<id> I<n>` is a silent no-op on this firmware). Gated on `boards[0].firmwareVersion`, same
-  `firmwareAtLeast` machinery as `motortune` but a **separate** constant (`MIN_ACCEL_FIRMWARE`, not
-  `MIN_TUNE_FIRMWARE`) since the two gate unrelated capabilities that only coincide on this release.
-  Below the gate every code path is byte-identical to pre-`81d68e1` behaviour.
+  exactly one active accelerometer machine-wide: `C` (with an optional `<canAddress>.` prefix) is
+  mandatory in `M955`, and **every `M955 C"..."` — local or remote — deletes and recreates the
+  accelerometer object**, resetting orientation to identity unless `I` is resupplied in the *same*
+  command (`I` is now only ever read inside the `gb.Seen('C')` branch — a bare `M955 P<id> I<n>`, with
+  no `C`, is a silent no-op on this firmware). Same `firmwareAtLeast` machinery as `motortune` but a
+  **separate** constant (`MIN_ACCEL_FIRMWARE`, not `MIN_TUNE_FIRMWARE`) since the two gate unrelated
+  capabilities that only coincide on this release. Below the gate every code path is byte-identical to
+  pre-`81d68e1` behaviour.
+  - **`P0` is mandatory in `M955` AND `M956`, in EVERY form (configure, query, arm) — never omitted,
+    even alongside `C`.** Confirmed directly against RRF source (`Accelerometers.cpp`'s
+    `ConfigureAccelerometer`/`StartAccelerometer`, both `gb.MustSee('P')` unconditionally before
+    anything else), not the changelog: it describes `P` as "zero or omitted (it defaults to zero)",
+    which is not accurate to the shipped implementation. `GetLimitedUIValue('P', ActualMaxAccelerometers)`
+    then caps it to `[0, 1)` — i.e. **the only legal value is literally `0`**; the plugin's own
+    `AccelerometerRef.id` (`"<canAddress>.0"`/`"0"`, an internal board-identifying key) must never be
+    sent as `P` verbatim once this scheme applies, only ever as the string `"0"`.
+    - `useResonanceLab.ts`'s `buildActivationCode`/`buildActivationCodeWithOrientation` and
+      `machineConfig.ts`'s `planAccelSave` all build `M955 P0 C"..."`; `planAccelSave`'s edit path
+      additionally self-heals a line saved by an earlier (pre-fix) version of this plugin that lacked
+      `P0` (`setParam` appends a missing token), since an unfixed line breaks config.g's own boot-time
+      `M955` too, independent of anything this plugin sends at runtime.
+    - `orchestrator.ts`'s six capture functions send `M956 P0 ...` (never a bare `M956 ...`) whenever
+      `activationCode` is set; legacy firmware keeps sending the old board.driver-shaped id, unchanged.
+    - `readAccelOrientation`/`readAccelRate` used to send a bare query `M955 P<accelId>` with the OLD
+      board.driver-shaped id (e.g. `"121.0"`) - always invalid once `GetLimitedUIValue` caps P to
+      `{0}`, and moot regardless, since RRF's query path reports on whichever board its OWN
+      `configs[0].boardAddress` bookkeeping currently points at (whichever board a `M955 C` last
+      targeted), not on whatever id is passed as `P`. Fixed to read the object model directly instead
+      (`liveAccelState(canAddress)`, the same source `buildActivationCode` already trusts) on
+      new-scheme firmware — `boards[N].accelerometer` is populated per board independently of which
+      one is globally active, so it answers "this board's own configured orientation/rate" correctly
+      without a G-code round trip at all. Legacy firmware keeps the original G-code query, unchanged.
+    - Two DISTINCT real-world symptoms this class of bug produced, from one field report (a Duet3D
+      developer, RC1 on both mainboard and toolboard - ruling out a firmware-version mismatch as the
+      cause): `Error M955: missing parameter 'P'` (the activation line omitting P entirely) and
+      separately `Error M955: parameter 'P' too high` (`readAccelOrientation`/`readAccelRate` sending
+      the old board.driver id, e.g. `121`, against a cap of `{0}`). An earlier pass at this fix
+      mis-attributed the first symptom to a mainboard/toolboard firmware mismatch instead - see below.
+  - **Also gated per-accelerometer on THAT accelerometer's own board firmware
+    (`useResonanceLab.ts`'s `usesNewAccelSchemeFor(canAddress)`, `machineConfig.ts`'s
+    `firmwareUsesNewAccelScheme(host, canAddress)`) — never `boards[0]` (the mainboard) alone.** A
+    remote `M955` (its `C` carries a CAN-address prefix) is forwarded whole to the board that prefix
+    names and parsed there by THAT board's own firmware, which is flashed and updated independently of
+    the mainboard's, so this is still the more correct check in general. **This was NOT, however, what
+    explained the field report above** - that reporter had RC1 on both boards; a real fix (P0 above)
+    turned out to have nothing to do with per-board firmware. Kept because the underlying property
+    (a toolboard's firmware CAN genuinely lag the mainboard's) is real, just not what was seen here.
   - **`useResonanceLab.ts`'s `buildActivationCode` reissues the full `M955 C"..." I<n> Q<freq> R<res>
     S<rate>` line before *every single measurement*, unconditionally** — never "skip if already
     active", since nothing tells this plugin whether another actor repointed the active accelerometer
@@ -157,6 +196,65 @@ first if only the 3.6 build breaks after adding a new shared module.
     check plus a CAN round-trip for a toolboard), the same per-pickup cost `M593`'s own tpost save
     already has, just newly expensive here. `R`/`S` are deliberately never persisted — they're a
     capture's own session sampling settings, not durable machine config.
+- **Multi-accelerometer support (RRF ≥3.7.0-rc.1+1, `src/config/firmwareVersion.ts`'s
+  `MIN_MULTI_ACCEL_FIRMWARE`)** — RepRapFirmware commit `ee3c80b` (RepRapFirmware) /
+  `73549e0` (Duet3Expansion) raises `MaxAccelerometers` from 1 to 10: `M955`'s `P` now selects one of up
+  to 10 independent slots (`configs[accelerometerNumber]`) instead of being pinned to `0`, so up to 10
+  *different* boards can each hold their own slot simultaneously (a board still gets only ONE slot —
+  RRF rejects reusing a board across two: "accelerometer on board %u is already in use as accelerometer
+  %u"). `P`/`C` are both still `gb.MustSee`-mandatory in both `M955` and `M956` (unchanged from the
+  single-slot era) — only the legal *range* of `P` changed, from `{0}` to `[0, 10)`. Everything below
+  the `MIN_ACCEL_FIRMWARE` gate (legacy) is untouched; everything between `MIN_ACCEL_FIRMWARE` and
+  `MIN_MULTI_ACCEL_FIRMWARE` (the single-slot era documented above) is also untouched and still applies
+  verbatim to firmware in that narrow range — this section only describes what changes at
+  `MIN_MULTI_ACCEL_FIRMWARE` and above.
+  - **RRF reports this exact version string: `"3.7.0-rc.1+1"`** — a real semver build-metadata suffix
+    (`+N`), which semver itself defines as precedence-*neutral* and which this project's own
+    `parseFirmwareVersion` used to discard outright (`s.split("+")[0]`) before this feature existed.
+    Duet3D is using it as a genuine sequential counter within one prerelease tag instead (confirmed by
+    diffing `Version.h` across two consecutive firmware commits — both bump only this number), so
+    `ParsedVersion` now carries an optional `build` field and `compareFirmwareVersions` adds it as a
+    final tiebreaker *after* the existing prerelease-length comparison. Don't re-drop the `+N` suffix
+    as "just metadata" - for this firmware line it's load-bearing.
+  - **A board's assigned slot number exists NOWHERE in the object model — only in the text of its own
+    `M955` line in config.g/`tpost<N>.g`.** Confirmed: neither firmware commit touches any object-model
+    file (`gh api .../commits/<sha> --jq '.files[].filename' | grep objectmodel` is empty for both, and
+    the new code's own comment reads `// TODO add configuration info ... to the object model`).
+    `boards[].accelerometer` stays singular per board (correct — a board still only ever has one slot)
+    but carries no field naming *which* slot number that is. `accelWiring.ts`'s `AccelWiring` gained a
+    `slot: number` field for this reason (parsed from the line's own `P` token, defaulting to `0` when
+    absent — deliberately correct for both eras: a single-slot line's `P` was always `0` anyway, so
+    every call site can read `wiring.slot` unconditionally with no separate multi-vs-single branch).
+    `findAllAccelWiring` (plural) is the multi-slot-aware sibling of the existing single-line lookups,
+    for scanning a whole file for every M955 line at once (used by slot-assignment and migration below).
+  - **Saving now always goes to config.g — the "this tool only / all tools" scope dialog is skipped
+    entirely for boards on this firmware** (`useResonanceLab.ts`'s `usesMultiAccelSchemeFor`,
+    `saveOrientationToConfig` calls `chooseShaperScope("all")` directly rather than opening the dialog).
+    Each board gets its own independent slot in config.g now, so the single-slot era's real dilemma
+    (only one board can be the boot-time default; everyone else needs a tpost re-assert) no longer
+    applies — there's no second meaningful option left to offer. `machineConfig.ts`'s `planAccelSave`
+    picks the board's EXISTING slot if config.g already has one for it (edit in place, keeping the
+    orientation-reset semantics above), else the lowest slot 0-9 not already used by another board in
+    config.g (`lowestFreeSlot`) — never reused across two different boards, since RRF itself rejects that.
+  - **Migration hazard for existing tool-changer installs, and the offered fix.** Every "this tool
+    only" save from BEFORE this feature existed wrote a full `M955 P0 C"..."` line into that tool's own
+    `tpost<N>.g` (`P` could only ever be `0` back then). On a machine upgraded to this firmware, picking
+    up any such tool still resends literally `P0` — silently reassigning slot 0 away from whatever
+    config.g just assigned there, no error, just wrong axis data on the next capture. `useResonanceLab.ts`
+    watches for this (`strayAccelLines`, gated on the tool-changer having at least one board already on
+    this firmware) and surfaces a dismissible banner; confirming it (`machineConfig.ts`'s
+    `planAccelMigration`) strikes every stray line out of its own `tpost<N>.g` (`buildRemovalPlan` — one
+    removal plan per affected FILE, all its stray lines removed together, diff built directly from the
+    known removed indices rather than through `gcodeEdit.ts`'s `diffLines`, which explicitly only
+    handles an edited-line-and/or-appended-lines shape, never a removal) and adds each board into
+    config.g with its own slot (reusing that board's existing config.g slot if it has one, tracking
+    slot assignments made earlier in the SAME migration batch so two boards being migrated together
+    never collide). Orientation is carried over from each stray line's own `I` value as a one-time
+    read (`orientationOf`) — this does NOT contradict "config.g's `I` is never trusted as an ongoing
+    source of truth" above, since there is no orientation-registry entry yet for a board that's never
+    been reactivated under this scheme; the file's own last-written value is the only thing worth
+    preserving. Removals are applied before additions, so a failure partway through a multi-board
+    migration never leaves a board deleted from tpost *and* missing from config.g at once.
 - **Analysis core** (`src/analysis/`, pure TS, fully unit-tested, zero Vue/store deps): `fft.ts`,
   `spectrum.ts` (Welch PSD), `shapers.ts` (RRF's MZV/ZVD/ZVDD/ZVDDD/EI2/EI3 per `AxisShaper.cpp`),
   `recommend.ts` (the tuning engine — `findBestShaper` single-axis, `findBestShaperCombined`
