@@ -245,7 +245,7 @@ first if only the 3.6 build breaks after adding a new shared module.
     this firmware) and surfaces a dismissible banner; confirming it (`machineConfig.ts`'s
     `planAccelMigration`) strikes every stray line out of its own `tpost<N>.g` (`buildRemovalPlan` — one
     removal plan per affected FILE, all its stray lines removed together, diff built directly from the
-    known removed indices rather than through `gcodeEdit.ts`'s `diffLines`, which explicitly only
+    known removed indices rather than through `dwc-gcode-core/edit`'s `diffLines`, which explicitly only
     handles an edited-line-and/or-appended-lines shape, never a removal) and adds each board into
     config.g with its own slot (reusing that board's existing config.g slot if it has one, tracking
     slot assignments made earlier in the SAME migration batch so two boards being migrated together
@@ -266,9 +266,12 @@ first if only the 3.6 build breaks after adding a new shared module.
   unit-testable without a printer — the `HostAdapter` supplies the real I/O), `sweep.ts` (G-code
   generator), `csv.ts` (RRF accelerometer CSV parser + `cropCaptureToDuration`), `tools.ts`
   (tool-changer support — see below).
-- **Config persistence** (`src/config/`): `gcodeEdit.ts` is a pure, line-preserving G-code file
-  editor (parse/find/edit one parameter or one directive/append/diff — no Vue or host imports, so
-  it's exhaustively unit-tested without a printer); `machineConfig.ts` is the thin host-injected
+- **Config persistence** (`src/config/`): the pure, line-preserving G-code file editor (parse/find/
+  edit one parameter or one directive/append/diff) moved to `dwc-gcode-core/edit` (2026-09-14,
+  `github:jaysuk/dwc-gcode-core#v0.2.0` — see `docs/gcode-core-plan.md` in duet-gcode-postprocessor),
+  merged with duet-calibration-wizard's copy of the same file; this repo's own `gcodeEdit.ts` and its
+  test are deleted, no Vue or host imports either way, exhaustively unit-tested upstream now instead
+  of here. `machineConfig.ts` is the thin host-injected
   layer that reads config.g/`tpost<N>.g`, builds a preview+diff, and on confirmation backs up the
   original file (`<path>.rlab-<timestamp>.bak`) before writing. Used to persist a measured
   accelerometer orientation or a recommended shaper past a reboot, which `M955`/`M593` sent at
@@ -323,11 +326,11 @@ first if only the 3.6 build breaks after adding a new shared module.
   users see no change.
 - **`M955`'s `I` orientation parameter is a string, not a number** (RRF concatenates two face-index
   digits, e.g. `"06"` — `src/analysis/axesMap.ts`'s `iParam: string | null`). A leading zero is
-  significant; round-tripping it through `Number()` would silently corrupt it. `gcodeEdit.ts` and
+  significant; round-tripping it through `Number()` would silently corrupt it. `dwc-gcode-core/edit` and
   `machineConfig.ts`'s `planAccelSave` treat it as an opaque string throughout for this reason.
 - **`M955` carries hardware wiring alongside orientation** — `P` (id), `C` (SPI CS pins), `Q` (SPI
   frequency), `I` (orientation) — confirmed in `Accelerometers.cpp`. Saving an orientation to
-  config.g therefore edits only the `I` token in place (`gcodeEdit.ts`'s `setParam`, which masks
+  config.g therefore edits only the `I` token in place (`dwc-gcode-core/edit`'s `setParam`, which masks
   quoted spans before searching so it can't be fooled by a digit inside a `C"^spi.cs1"`-style pin
   name); it never rewrites the whole line, which would silently discard `C`/`Q`.
 - **RRF has no smoothing parameter, no smoothing report, and nothing acceleration-linked anywhere in
