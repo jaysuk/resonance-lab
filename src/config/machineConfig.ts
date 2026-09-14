@@ -10,11 +10,15 @@ import type { HostAdapter } from "../core/host";
 import {
 	findAccelWiring, findAllAccelWiring, findOtherAccelWiring, parseCPrefix, type AccelWiring,
 } from "./accelWiring";
+// The /firmware subpath, not the bare "dwc-gcode-core" root specifier: DWC 3.6's older webpack/TS
+// build can't resolve the root ("." export has no "require" condition for this ESM-only package),
+// even though a documented subpath - like the /edit import right below - always works.
+import { firmwareAtLeast } from "dwc-gcode-core/firmware";
 import {
 	appendDirective, detectEol, diffLines, findDirectives, parseLines, replaceDirective,
 	replaceLine, serializeLines, setParam, type DiffLine, type GcodeLine,
 } from "dwc-gcode-core/edit";
-import { firmwareAtLeast, MIN_ACCEL_FIRMWARE, MIN_MULTI_ACCEL_FIRMWARE } from "./firmwareVersion";
+import { MIN_ACCEL_FIRMWARE, MIN_MULTI_ACCEL_FIRMWARE } from "./firmwareVersion";
 
 /** Same-day, sortable audit stamp for a "; Resonance Lab <date>" comment above an appended directive. */
 function dateStamp(): string {

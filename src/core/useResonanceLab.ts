@@ -49,7 +49,10 @@ import {
 	type StrayAccelLine,
 } from "../config/machineConfig";
 import { chipFromIoin, type DriverChip, IOIN_ADDRESSES, parseRegisterValue, supportsWaveformCorrection } from "../config/driverChip";
-import { firmwareAtLeast, MIN_ACCEL_FIRMWARE, MIN_MULTI_ACCEL_FIRMWARE } from "../config/firmwareVersion";
+// The /firmware subpath, not the bare "dwc-gcode-core" root specifier - see machineConfig.ts's own
+// import of this for why (DWC 3.6's older webpack/TS build can't resolve the root specifier).
+import { firmwareAtLeast } from "dwc-gcode-core/firmware";
+import { MIN_ACCEL_FIRMWARE, MIN_MULTI_ACCEL_FIRMWARE } from "../config/firmwareVersion";
 import {
 	activeTool, beltResult, combinedRec, findOrientationEntry, lastResult, loadOrientationRegistry,
 	measurementRunning, method, motorResult, motorTuneResult, multiResults, orientationResult, profileResult,
