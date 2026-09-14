@@ -15,7 +15,7 @@
   },
   "dependencies": {
     "chart.js": "^4.5.1",
-    "dwc-gcode-core": "github:jaysuk/dwc-gcode-core#v0.2.0",
+    "dwc-gcode-core": "github:jaysuk/dwc-gcode-core#v0.3.1",
     "dwc-plugin-runtime": "^0.8.7"
   },
   "devDependencies": {
