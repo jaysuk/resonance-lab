@@ -35,10 +35,12 @@ const INCLUDE = ["analysis", "capture", "config", "core", "i18n", "ui36", "state
  * there). Installing v4 into the 3.6 checkout would break DWC's own charts, so instead the plugin's
  * copy is staged into a `node_modules` INSIDE the plugin's source folder: webpack resolves package
  * imports by walking up from the importing file, so `src/plugins/ResonanceLab/node_modules/chart.js`
- * is found before the checkout's own. Same trick for dwc-plugin-runtime, which 3.6 has never heard
- * of - which keeps this build reproducible on any 3.6 checkout with no manual preparation.
+ * is found before the checkout's own. Same trick for dwc-plugin-runtime and dwc-gcode-core, which
+ * 3.6 has never heard of either - which keeps this build reproducible on any 3.6 checkout with no
+ * manual preparation. dwc-gcode-core is reached from `config/gcodeEdit.ts`'s replacement import
+ * (`config/` is in INCLUDE above, shared with the 3.7 build), so it needs vendoring here too.
  */
-const VENDOR = ["chart.js", "dwc-plugin-runtime"];
+const VENDOR = ["chart.js", "dwc-plugin-runtime", "dwc-gcode-core"];
 
 rmSync(outDir, { recursive: true, force: true });
 mkdirSync(join(outDir, "src"), { recursive: true });

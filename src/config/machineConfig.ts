@@ -1,7 +1,7 @@
 /**
  * Read/diff/backup/write config.g and tool-change macros through a `HostAdapter`, using the pure
- * line editor in ./gcodeEdit for the actual editing. This is the layer that touches the machine;
- * everything about WHERE and HOW SAFELY to edit a line lives in gcodeEdit.ts and is tested there
+ * line editor in `dwc-gcode-core/edit` for the actual editing. This is the layer that touches the
+ * machine; everything about WHERE and HOW SAFELY to edit a line lives there and is tested there
  * without a printer. Nothing here writes anything without the caller explicitly calling
  * `applyEditPlan` on a plan it has shown the user - `plan*` functions are pure previews.
  */
@@ -10,11 +10,11 @@ import type { HostAdapter } from "../core/host";
 import {
 	findAccelWiring, findAllAccelWiring, findOtherAccelWiring, parseCPrefix, type AccelWiring,
 } from "./accelWiring";
-import { firmwareAtLeast, MIN_ACCEL_FIRMWARE, MIN_MULTI_ACCEL_FIRMWARE } from "./firmwareVersion";
 import {
 	appendDirective, detectEol, diffLines, findDirectives, parseLines, replaceDirective,
 	replaceLine, serializeLines, setParam, type DiffLine, type GcodeLine,
-} from "./gcodeEdit";
+} from "dwc-gcode-core/edit";
+import { firmwareAtLeast, MIN_ACCEL_FIRMWARE, MIN_MULTI_ACCEL_FIRMWARE } from "./firmwareVersion";
 
 /** Same-day, sortable audit stamp for a "; Resonance Lab <date>" comment above an appended directive. */
 function dateStamp(): string {

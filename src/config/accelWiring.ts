@@ -6,9 +6,9 @@
  *
  * Needed because RRF's object model carries no field for M955's `C` wiring string anywhere - as of
  * 3.7.0-rc.1 it only ever exists as the text of the M955 line itself. Pure text parsing on top of
- * `gcodeEdit.ts`'s `parseLines`; no Vue/host imports.
+ * `dwc-gcode-core/edit`'s `parseLines`; no Vue/host imports.
  */
-import { parseLines, type GcodeLine } from "./gcodeEdit";
+import { parseLines, type GcodeLine } from "dwc-gcode-core/edit";
 
 export interface AccelWiring {
 	/** The exact C parameter value as written, quotes stripped, e.g. "121.i2c.lis" or "^spi.cs1". */
@@ -24,7 +24,7 @@ export interface AccelWiring {
 	slot: number;
 }
 
-/** Strip a param value's surrounding quotes, exactly as gcodeEdit's parseLines leaves them attached
+/** Strip a param value's surrounding quotes, exactly as dwc-gcode-core/edit's parseLines leaves them attached
  *  (e.g. '"121.i2c.lis"'). A no-op on an already-bare value like a Q frequency. */
 function unquote(v: string): string {
 	return v.replace(/^"|"$/g, "");
