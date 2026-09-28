@@ -10,7 +10,16 @@
  * the 3.7 sine-table waveform correction (see ../analysis/motorTuning.ts). Do not conflate them.
  */
 
-/** IOIN register addresses that carry the chip VERSION byte: UART parts (22xx) at 0x06, SPI parts (5160/2240) at 0x04. */
+/**
+ * IOIN register addresses that carry the chip VERSION byte: the tmc22xx register map has it at
+ * 0x06, the tmc5160/tmc2240 register map at 0x04. This is a chip-family register-map difference,
+ * not a statement about which bus a board actually wires the chip to - the TMC2240 (unlike the
+ * TMC5160) supports both SPI and UART, so a board can and does put a 0x04-family chip on a UART
+ * link (e.g. the SB2040 Pro Max V3), where its VERSION byte still reads back correctly at 0x04 but
+ * M970.3/M569.2's waveform-correction write is not supported. `supportsWaveformCorrection` below is
+ * therefore informative only - see the runtime query-form probe in useResonanceLab.ts, which is the
+ * actual capability check.
+ */
 export const IOIN_ADDRESSES = { uart: 0x06, spi: 0x04 } as const;
 
 export type DriverFamily = "tmc22xx" | "tmc5160" | "tmc2240";
@@ -45,10 +54,11 @@ export function parseRegisterValue(reply: string | null | undefined): number | n
 }
 
 /**
- * Identify a chip from its IOIN VERSION byte (bits 31:24). UART parts expose IOIN at 0x06
- * (0x20 = TMC2208, 0x21 = TMC2209/2226), SPI parts at 0x04 (0x30 = TMC5160/2160, 0x40 = TMC2240).
- * Pass whichever reads you have; returns the matched chip + family, or null if neither looks valid -
- * never guess.
+ * Identify a chip from its IOIN VERSION byte (bits 31:24). The tmc22xx register map exposes IOIN
+ * at 0x06 (0x20 = TMC2208, 0x21 = TMC2209/2226), the tmc5160/tmc2240 register map at 0x04
+ * (0x30 = TMC5160/2160, 0x40 = TMC2240) - a chip-family distinction, not a UART-vs-SPI one (see
+ * IOIN_ADDRESSES above). Pass whichever reads you have; returns the matched chip + family, or null
+ * if neither looks valid - never guess.
  */
 export function chipFromIoin(read: { uart?: number | null; spi?: number | null }): DriverChip | null {
 	const vUart = read.uart != null ? (read.uart >>> 24) & 0xFF : -1;
