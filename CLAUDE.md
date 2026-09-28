@@ -104,10 +104,16 @@ first if only the 3.6 build breaks after adding a new shared module.
   RRF 3.7.0-rc.2 also let `M970`/`M970.3` run on mainboards without local phase stepping (Duet 3 Mini
   5+, MB6XD) to configure CAN-connected drivers; on those an rc.1 mainboard passes the version gate but
   fails the probe, which reports the driver as unsupported. The chip itself (informative only, never gating) is identified
-  by reading its IOIN register's VERSION byte over `M569.2 P<drv> R<addr>` (UART parts at `0x06`, SPI
-  at `0x04`) — the same method the sibling `duet-tmc-tuner` plugin uses, since this is the only
-  reliable way to tell a TMC5160/2240 (has a waveform correction) from a TMC2208/2209 (doesn't) on
-  the STM32 port. **The first such register read after a page load is often stale** (RRF returns a
+  by reading its IOIN register's VERSION byte over `M569.2 P<drv> R<addr>` (the tmc22xx register map
+  has it at `0x06`, the tmc5160/tmc2240 register map at `0x04`) — the same method the sibling
+  `duet-tmc-tuner` plugin uses, since this is the only reliable way to tell a TMC5160/2240 (has a
+  waveform correction) from a TMC2208/2209 (doesn't) on the STM32 port. **The register address is a
+  chip-family distinction, not a UART-vs-SPI one** — the TMC2240 (unlike the TMC5160) supports both
+  interfaces, so a board can and does wire a `0x04`-family chip over UART (e.g. the SB2040 Pro Max
+  V3): `chipFromIoin` still reads its VERSION byte back correctly and reports TMC2240, but the
+  firmware's waveform-correction write is not supported on that link. This is exactly why chip
+  detection stays informative-only and the runtime probe (above) is the real gate — don't add a
+  chip-family shortcut that skips it. **The first such register read after a page load is often stale** (RRF returns a
   cached/empty value before the driver is actually read) — `detectChip()` retries up to 4× with a
   200 ms gap; don't remove that loop. **The re-detect watcher must key off `activeMotor.value?.motor`
   (the axis letter), never the `activeMotor` object itself** — `activeMotor` is a `computed` that
