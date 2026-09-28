@@ -109,7 +109,15 @@ first if only the 3.6 build breaks after adding a new shared module.
   reliable way to tell a TMC5160/2240 (has a waveform correction) from a TMC2208/2209 (doesn't) on
   the STM32 port. **The first such register read after a page load is often stale** (RRF returns a
   cached/empty value before the driver is actually read) — `detectChip()` retries up to 4× with a
-  200 ms gap; don't remove that loop. The search itself models a correction as a vector added to the
+  200 ms gap; don't remove that loop. **The re-detect watcher must key off `activeMotor.value?.motor`
+  (the axis letter), never the `activeMotor` object itself** — `activeMotor` is a `computed` that
+  rebuilds a fresh object from the live object model on every poll, so watching the object re-fires
+  continuously during a run (a tuning run is nothing but moves, so the model never stops changing
+  mid-search), wiping `detectedChip` back to `null` and sending a fresh round of `M569.2 R<addr>`
+  probes interleaved with the actual tuning commands — and can leave the finished result stamped with
+  a null chip (renders as "?" in the result summary) even though detection had already succeeded
+  earlier in the same session. Fixed once already; don't revert to watching the object.
+  The search itself models a correction as a vector added to the
   motor's own error vector, making the squared-amplitude response linear in four unknowns, so a
   least-squares fit finds the optimum in closed form; both move directions are measured and fit
   separately then combined, since a rotor-fixed error component shifts by the load angle and flips

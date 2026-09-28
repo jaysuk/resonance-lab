@@ -902,9 +902,15 @@ export function useResonanceLab(host: HostAdapter) {
 
 	// Re-detect whenever the tuning task is opened or the selected motor changes - not on every page
 	// load regardless of task, which would spam the G-code console with register reads for a task the
-	// user isn't even looking at.
-	watch([method, activeMotor], async ([m, motor]) => {
-		if (m !== "motortune" || !motor) {
+	// user isn't even looking at. Keyed on the motor's LETTER, not the `activeMotor` object itself:
+	// that computed rebuilds a fresh object from the live object model, so its identity changes on
+	// every model update - and a tuning run is nothing but moves, so the model updates continuously
+	// throughout. Watching the object would re-fire mid-search, wiping detectedChip back to null and
+	// sending a fresh round of M569.2 register-read probes interleaved with the actual tuning
+	// commands, sometimes leaving the result stamped with a null chip (shows as "?") even though
+	// detection had already succeeded.
+	watch([method, () => activeMotor.value?.motor], async ([m, motorLetter]) => {
+		if (m !== "motortune" || !motorLetter) {
 			return;
 		}
 		detectedChip.value = null;
