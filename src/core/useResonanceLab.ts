@@ -994,6 +994,32 @@ export function useResonanceLab(host: HostAdapter) {
 	const confirmGcodeOpen = ref(false);
 	const skipGcodeConfirm = ref(false);
 
+	// True while any visible axis is un-homed — the same test `measure()` guards on. Drives the "Home all"
+	// button beside Measure, so a rebooted board or a motors-off machine can be homed without leaving the page.
+	const needsHoming = computed(() => {
+		const axes = (host.model() as { move?: { axes?: Array<{ visible?: boolean; homed?: boolean }> } }).move?.axes ?? [];
+		return axes.some((a) => a.visible !== false && a.homed === false);
+	});
+	const homing = ref(false);
+	const canHome = computed(() => isConnected.value && !running.value && !loadingCapture.value && !homing.value);
+
+	async function homeAll(): Promise<void> {
+		if (!canHome.value) {
+			return;
+		}
+		homing.value = true;
+		try {
+			await host.sendCode("G28");
+			if (error.value === t("notHomed")) {
+				error.value = "";
+			}
+		} catch (e) {
+			error.value = e instanceof Error ? e.message : String(e);
+		} finally {
+			homing.value = false;
+		}
+	}
+
 	function onMeasureClick(): void {
 		if (method.value === "custom" && adv.value.customMoves.trim() && !skipGcodeConfirm.value) {
 			confirmGcodeOpen.value = true;
@@ -2460,6 +2486,10 @@ export function useResonanceLab(host: HostAdapter) {
 		confirmGcodeOpen,
 		skipGcodeConfirm,
 		onMeasureClick,
+		needsHoming,
+		homing,
+		canHome,
+		homeAll,
 		measure,
 		verifyResult,
 		appliedFit,

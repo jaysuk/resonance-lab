@@ -352,7 +352,7 @@
 							<span class="text--secondary">{{ $t("plugins.resonanceLab.controls.accelerometer") }}:</span> {{ selectedAccel.label }}
 							<HelpTip v-if="selectedAccelWiringMissing" :text="$t('plugins.resonanceLab.accel.wiringMissing')" />
 						</div>
-						<v-select v-if="method === 'sweep'" v-model="selectedAxes" :items="axisItems" multiple chips deletable-chips
+						<v-select v-if="method === 'sweep'" v-model="selectedAxes" :items="axisItems" multiple chips small-chips deletable-chips
 								  dense outlined hide-details style="min-width: 170px"
 								  :label="$t('plugins.resonanceLab.controls.axes')" :disabled="running" />
 						<v-select v-else-if="method === 'motor' || method === 'motortune'" v-model="selectedMotor" :items="motorItems" dense outlined
@@ -382,6 +382,9 @@
 						<v-text-field v-if="activeTask.params.includes('tuneSpeed')" v-model.number="adv.tuneSpeed" type="number" dense outlined hide-details label="Speed (mm/s)" style="max-width: 132px" :disabled="running"><template #append><HelpTip text="Constant test speed, in mm/s, used for every probe move during the search." /></template></v-text-field>
 						<v-text-field v-if="activeTask.params.includes('tuneLength')" v-model.number="adv.tuneLength" type="number" dense outlined hide-details label="Length (mm)" style="max-width: 132px" :disabled="running"><template #append><HelpTip text="Length of the motor-isolating move, in mm." /></template></v-text-field>
 						<v-spacer />
+						<v-btn v-if="needsHoming" class="mr-2" outlined :loading="homing" :disabled="!canHome" @click="homeAll">
+							<v-icon left>mdi-home</v-icon>{{ $t("plugins.resonanceLab.controls.homeAll") }}
+						</v-btn>
 						<v-btn color="primary" :loading="running" :disabled="!canMeasure" @click="onMeasureClick">
 							<v-icon left>mdi-play</v-icon>{{ $t("plugins.resonanceLab.controls.measure") }}
 						</v-btn>
@@ -815,6 +818,10 @@ const {
 	confirmGcodeOpen,
 	skipGcodeConfirm,
 	onMeasureClick,
+	needsHoming,
+	homing,
+	canHome,
+	homeAll,
 	measure,
 	verifyResult,
 	appliedFit,

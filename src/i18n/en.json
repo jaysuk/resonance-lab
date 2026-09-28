@@ -16,6 +16,7 @@
 		"axis": "Axis",
 		"axes": "Axes",
 		"measure": "Measure",
+		"homeAll": "Home all",
 		"customMoves": "Custom move profile (one G-code per line)",
 		"loadCsv": "Load CSV",
 		"captures": "Captures",

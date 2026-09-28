@@ -349,6 +349,9 @@
 						<v-text-field v-if="activeTask.params.includes('tuneSpeed')" v-model.number="adv.tuneSpeed" type="number" density="compact" variant="outlined" hide-details label="Speed (mm/s)" style="max-width: 132px" :disabled="running"><template #append-inner><HelpTip text="Constant test speed, in mm/s, used for every probe move during the search." /></template></v-text-field>
 						<v-text-field v-if="activeTask.params.includes('tuneLength')" v-model.number="adv.tuneLength" type="number" density="compact" variant="outlined" hide-details label="Length (mm)" style="max-width: 132px" :disabled="running"><template #append-inner><HelpTip text="Length of the motor-isolating move, in mm." /></template></v-text-field>
 						<v-spacer />
+						<v-btn v-if="needsHoming" class="mr-2" variant="outlined" prepend-icon="mdi-home" :loading="homing" :disabled="!canHome" @click="homeAll">
+							{{ $t("plugins.resonanceLab.controls.homeAll") }}
+						</v-btn>
 						<v-btn color="primary" prepend-icon="mdi-play" :loading="running" :disabled="!canMeasure" @click="onMeasureClick">
 							{{ $t("plugins.resonanceLab.controls.measure") }}
 						</v-btn>
@@ -773,6 +776,10 @@ const {
 	confirmGcodeOpen,
 	skipGcodeConfirm,
 	onMeasureClick,
+	needsHoming,
+	homing,
+	canHome,
+	homeAll,
 	measure,
 	verifyResult,
 	appliedFit,
