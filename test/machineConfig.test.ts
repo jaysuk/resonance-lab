@@ -283,18 +283,26 @@ describe("planAccelSave - new-scheme firmware (>= 3.7.0-rc.1)", () => {
 	});
 });
 
-describe("planAccelSave - mixed firmware (mainboard updated, an accelerometer's own board not)", () => {
-	// A CAN toolboard's firmware is flashed and updated independently of the mainboard's, and a remote
-	// M955 is forwarded whole to the board its C prefix names and parsed by THAT board's own firmware -
-	// so the scheme in use has to be decided per-accelerometer, never by boards[0] (the mainboard)
-	// alone. NOTE: this is a general robustness property, not itself the explanation for the "Tool
-	// Board 1LC ... missing parameter 'P'" field report that motivated writing these tests - that
-	// report turned out to be caused by P0 being omitted entirely on RC1 boards on BOTH sides (see the
-	// "P0 is still mandatory" tests below and in the new-scheme describe block above), not by mixed
-	// firmware. Kept because the per-board property is still real and still worth guarding.
+describe("planAccelSave - mixed firmware: the MAINBOARD's version decides the scheme", () => {
+	// M955/M956 are validated on the mainboard first (P is MustSee and range-limited there, C is parsed
+	// there, the slot table lives there) - a remote board only receives the forwarded parameters. So an
+	// updated mainboard rejects a legacy P<board.driver> line whatever its toolboard runs, and an old
+	// mainboard can't accept C at all. (This suite used to gate per accelerometer-board instead, after a
+	// field report that turned out to be caused by P being omitted entirely, not by mixed firmware.)
 
-	it("uses the LEGACY P-based line for an accelerometer whose own board is still on old firmware", async () => {
-		const { host } = fakeHost({ "0:/sys/config.g": "M955 P121.0 I0" }, MIXED_FIRMWARE_MODEL);
+	it("uses the NEW C-based line for a toolboard still on old firmware when the mainboard is updated", async () => {
+		const { host } = fakeHost({ "0:/sys/config.g": 'M955 C"121.i2c.lis" I0' }, MIXED_FIRMWARE_MODEL);
+		const { plan } = await planAccelSave(host, accelRef("121.0"), "all", "6");
+		expect(plan.after).toBe('M955 C"121.i2c.lis" I6 P0');
+		expect(plan.after).not.toContain("P121.0");
+	});
+
+	it("uses the LEGACY P-based line when the mainboard is old, even if the toolboard is new", async () => {
+		const model = {
+			directories: { system: "0:/sys" },
+			boards: [{ canAddress: 0, firmwareVersion: "3.6.1" }, { canAddress: 121, firmwareVersion: "3.7.0-rc.2" }],
+		};
+		const { host } = fakeHost({ "0:/sys/config.g": "M955 P121.0 I0" }, model);
 		const { plan } = await planAccelSave(host, accelRef("121.0"), "all", "6");
 		expect(plan.after).toBe("M955 P121.0 I6");
 		expect(plan.after).not.toContain("C\"");

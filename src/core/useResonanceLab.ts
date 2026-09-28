@@ -37,22 +37,21 @@ import {
 	maxLength, maxSpeedForRate, type MotorOption,
 } from "../capture/motorMoves";
 import {
-	beltEstimatedDurationSec, DEFAULT_PROGRAM_DIR, downloadCapture, findAccelerometers, parseAccelRateFromReport,
+	accelCanAddress, beltEstimatedDurationSec, DEFAULT_PROGRAM_DIR, downloadCapture, findAccelerometers, parseAccelRateFromReport,
 	resizeForActualRate, runBeltCapture, runFixedExcitation, runMotorPointCapture, runNativeCapture,
 	runSpeedPointCapture, runSweepCapture, type AccelerometerRef, type MachineIO,
 } from "../capture/orchestrator";
 import { shaperRestoreGcode, type ShaperState } from "../capture/sweep";
-import { accelForTool } from "../capture/tools";
+import { accelForTool, findAccelModelEntry } from "../capture/tools";
 import {
-	applyEditPlan, configPath, findExistingWiring, findStrayTpostAccelLines, planAccelMigration, planAccelSave,
-	planShaperSave, restartAfterConfigEdit, type AccelMigrationPlan, type DirectiveEditPlan, type ShaperScope,
+	applyEditPlan, configPath, findStrayTpostAccelLines, planAccelMigration, planAccelSave,
+	planShaperSave, resolveAccelWiring, restartAfterConfigEdit, type AccelMigrationPlan, type DirectiveEditPlan, type ShaperScope,
 	type StrayAccelLine,
 } from "../config/machineConfig";
 import { chipFromIoin, type DriverChip, IOIN_ADDRESSES, parseRegisterValue, supportsWaveformCorrection } from "../config/driverChip";
-// The /firmware subpath, not the bare "dwc-gcode-core" root specifier - see machineConfig.ts's own
-// import of this for why (DWC 3.6's older webpack/TS build can't resolve the root specifier).
-import { firmwareAtLeast } from "dwc-gcode-core/firmware";
-import { MIN_ACCEL_FIRMWARE, MIN_MULTI_ACCEL_FIRMWARE } from "../config/firmwareVersion";
+import { accelScheme } from "../config/accelScheme";
+import { accelSetupHints as findAccelSetupHints } from "../config/accelBoards";
+import { motorTuneSupported as motorTuneSupportedFor, usesFreePhaseCorrection } from "../config/motorTuneSupport";
 import {
 	activeTool, beltResult, combinedRec, findOrientationEntry, lastResult, loadOrientationRegistry,
 	measurementRunning, method, motorResult, motorTuneResult, multiResults, orientationResult, profileResult,
@@ -120,6 +119,8 @@ export function useResonanceLab(host: HostAdapter) {
 	// ── Controls ─────────────────────────────────────────────────────────────────
 	const accelItems = computed(() => findAccelerometers(host.model()));
 	const selectedAccel = ref<AccelerometerRef | null>(null);
+	/** SPI-accelerometer boards with nothing configured yet, each with the M955 line to add (see ../config/accelBoards.ts). */
+	const accelSetupHints = computed(() => findAccelSetupHints(host.model()));
 	/**
 	 * True once the user has manually picked an accelerometer this session - stops the tool-follow
 	 * auto-select below from overriding a deliberate choice (e.g. reviewing a different tool's data
@@ -375,14 +376,12 @@ export function useResonanceLab(host: HostAdapter) {
 	// ── Measurement ──────────────────────────────────────────────────────────────
 	/**
 	 * The firmware's completed-sampling-run counter for an accelerometer
-	 * (`boards[].accelerometer.runs`). Ticks the instant the CSV is closed — the authoritative
-	 * "recording done" signal. Accel ids are "<canAddress>.0" (CAN boards) or "0" (mainboard).
+	 * (`sensors.accelerometers[].runs`, or `boards[].accelerometer.runs` before RRF 3.7.0-rc.2).
+	 * Ticks the instant the CSV is closed — the authoritative "recording done" signal. Accel ids are
+	 * "<canAddress>.0" (CAN boards) or "0" (mainboard).
 	 */
 	function readAccelRuns(accelId: string): number {
-		const boardId = parseInt(accelId, 10) || 0;
-		const boards = (host.model() as { boards?: Array<{ canAddress?: number | null; accelerometer?: { runs?: number } | null } | null> }).boards ?? [];
-		const board = boards.find((b) => b && b.accelerometer && (b.canAddress ?? 0) === boardId);
-		return board?.accelerometer?.runs ?? 0;
+		return findAccelModelEntry(host.model(), parseInt(accelId, 10) || 0)?.runs ?? 0;
 	}
 
 	/** Resolve when the run counter rises above `from` (watched on the object model); reject on timeout. */
@@ -459,50 +458,32 @@ export function useResonanceLab(host: HostAdapter) {
 	// in the SAME command. See src/config/firmwareVersion.ts's MIN_ACCEL_FIRMWARE for the exact
 	// threshold this reuses (a separate constant from motortune's own gate, even though both happen to
 	// be "3.7.0-rc.1" today).
-	/** Firmware of the board actually carrying `canAddress` (the mainboard when 0/absent). */
-	function boardFirmware(canAddress: number): string | null {
-		const boards = (host.model() as { boards?: Array<{ canAddress?: number | null; firmwareVersion?: string } | null> }).boards ?? [];
-		return boards.find((b) => b && (b.canAddress ?? 0) === canAddress)?.firmwareVersion ?? null;
-	}
-	/**
-	 * Whether THIS SPECIFIC accelerometer's own board runs firmware new enough for the single-
-	 * accelerometer M955/M956 scheme - deliberately NOT a single machine-wide flag (an earlier version
-	 * of this code checked only `boards[0]`, the mainboard). A remote `M955` (its `C` has a CAN-address
-	 * prefix) is forwarded whole to that board and parsed by ITS OWN firmware, which is flashed and
-	 * updated independently of the mainboard's - mirrors motortune's own `driverBoardFirmware`
-	 * precedent for exactly this reason. Gating on the mainboard alone let a P-omitted activation line
-	 * reach an outdated toolboard, which rejected it with "Error M955: missing parameter 'P'" - a real
-	 * field report (mainboard already on 3.7.0-rc.1+, that toolboard not yet updated), not theoretical.
-	 */
-	function usesNewAccelSchemeFor(canAddress: number): boolean {
-		return firmwareAtLeast(boardFirmware(canAddress), MIN_ACCEL_FIRMWARE);
+	// Which scheme the machine speaks is decided by the MAINBOARD's firmware alone (see
+	// ../config/accelScheme.ts for why - M955/M956 are validated and slotted there, whatever board the
+	// accelerometer is on), so these take no board argument.
+	function usesNewAccelScheme(): boolean {
+		return accelScheme(host.model()) !== "legacy";
 	}
 
-	/** Whether THIS SPECIFIC accelerometer's own board runs firmware new enough for the
-	 *  multi-accelerometer scheme (RRF >= 3.7.0-rc.1+1, up to 10 independent slots) - same per-board
-	 *  reasoning as usesNewAccelSchemeFor, not a machine-wide flag. Under this scheme every board's
-	 *  own M955 line always lands in config.g regardless of scope (see machineConfig.ts's
-	 *  planAccelSave), so the "this tool only / all tools" choice from the single-slot era no longer
-	 *  has a real second option to offer - saveOrientationToConfig skips the dialog outright here. */
-	function usesMultiAccelSchemeFor(canAddress: number): boolean {
-		return firmwareAtLeast(boardFirmware(canAddress), MIN_MULTI_ACCEL_FIRMWARE);
+	/** Whether the machine speaks the multi-accelerometer scheme (RRF >= 3.7.0-rc.1+1, up to 10 independent
+	 *  slots). Under it every board's own M955 line always lands in config.g regardless of scope (see
+	 *  machineConfig.ts's planAccelSave), so the "this tool only / all tools" choice from the single-slot
+	 *  era no longer has a real second option to offer - saveOrientationToConfig skips the dialog outright. */
+	function usesMultiAccelScheme(): boolean {
+		return accelScheme(host.model()) === "multi";
 	}
 
 	/** Live OM lookup for a board's CURRENT orientation/resolution/rate - used to seed the orientation
 	 *  registry the first time a board is seen this session (the OM is always current; config.g/tpost
 	 *  text goes stale the instant an orientation is applied at runtime only). */
 	function liveAccelState(canAddress: number): { orientation: number; resolution: number; samplingRate: number; uniqueId: string | null } | null {
-		const boards = (host.model() as { boards?: Array<{
-			canAddress?: number | null; uniqueId?: string | null;
-			accelerometer?: { orientation?: number; resolution?: number; samplingRate?: number } | null;
-		} | null> }).boards ?? [];
-		const board = boards.find((b) => b && (b.canAddress ?? 0) === canAddress);
-		if (!board?.accelerometer) {
+		const entry = findAccelModelEntry(host.model(), canAddress);
+		if (!entry) {
 			return null;
 		}
 		return {
-			orientation: board.accelerometer.orientation ?? 20, resolution: board.accelerometer.resolution ?? 10,
-			samplingRate: board.accelerometer.samplingRate ?? 1000, uniqueId: board.uniqueId ?? null,
+			orientation: entry.orientation ?? 20, resolution: entry.resolution ?? 10,
+			samplingRate: entry.samplingRate ?? 1000, uniqueId: entry.board?.uniqueId ?? null,
 		};
 	}
 
@@ -514,12 +495,17 @@ export function useResonanceLab(host: HostAdapter) {
 	 *  line there could legally have - see AccelWiring.slot) so the caller can also arm the matching
 	 *  M956 P<slot>, never a hardcoded 0 once more than one accelerometer can be configured. */
 	async function buildActivationCodeWithOrientation(accel: AccelerometerRef, orientation: string): Promise<{ code: string; slot: number } | null> {
-		const wiring = await findExistingWiring(host, accel);
+		const wiring = await resolveAccelWiring(host, accel);
 		if (!wiring) {
 			return null;
 		}
 		const q = wiring.spiFrequency ? ` Q${wiring.spiFrequency}` : "";
-		return { code: `M955 P${wiring.slot} C"${wiring.cSpec}" I${orientation}${q}`, slot: wiring.slot };
+		// Reconfiguring resets resolution and rate to the firmware defaults, so a slot the object model
+		// describes is re-issued with the values it currently has (0 = the firmware doesn't know them).
+		const live = accel.slot !== undefined ? liveAccelState(accelCanAddress(accel)) : null;
+		const r = live && live.resolution > 0 ? ` R${live.resolution}` : "";
+		const rate = live && live.samplingRate > 0 ? ` S${live.samplingRate}` : "";
+		return { code: `M955 P${wiring.slot} C"${wiring.cSpec}" I${orientation}${q}${r}${rate}`, slot: wiring.slot };
 	}
 
 	/**
@@ -530,7 +516,7 @@ export function useResonanceLab(host: HostAdapter) {
 	 * repointed the active accelerometer since the last capture.
 	 */
 	async function buildActivationCode(accel: AccelerometerRef): Promise<{ code: string; slot: number } | null> {
-		const canAddress = parseInt(accel.id, 10) || 0;
+		const canAddress = accelCanAddress(accel);
 		const live = liveAccelState(canAddress);
 		const registry = loadOrientationRegistry();
 		let entry = findOrientationEntry(registry, canAddress, live?.uniqueId ?? null);
@@ -546,7 +532,7 @@ export function useResonanceLab(host: HostAdapter) {
 		if (!entry) {
 			return null; // board never configured at all - nothing to reactivate
 		}
-		const wiring = await findExistingWiring(host, accel);
+		const wiring = await resolveAccelWiring(host, accel);
 		if (!wiring) {
 			return null;
 		}
@@ -556,16 +542,21 @@ export function useResonanceLab(host: HostAdapter) {
 	}
 
 	/**
-	 * Resolve the `activationCode` to pass into a capture for `accel`, gated on THAT accelerometer's
-	 * OWN board firmware (`usesNewAccelSchemeFor`) - never a single machine-wide flag, since a
-	 * tool-changer can easily have boards on different firmware versions. Sets the `wiringMissing`
+	 * Resolve the `activationCode` to pass into a capture for `accel`, gated on the mainboard's firmware
+	 * (`usesNewAccelScheme`), which is what validates the M955/M956 it will send. Sets the `wiringMissing`
 	 * error and tells the caller to abort when this accelerometer needs an activation line and none
 	 * could be built, rather than falling through to a P-based call that firmware would reject.
 	 */
-	async function resolveActivationCode(accel: AccelerometerRef): Promise<{ ok: true; code: string | undefined; slot: number } | { ok: false }> {
-		const canAddress = parseInt(accel.id, 10) || 0;
-		if (!usesNewAccelSchemeFor(canAddress)) {
-			return { ok: true, code: undefined, slot: 0 };
+	async function resolveActivationCode(accel: AccelerometerRef): Promise<{ ok: true; code: string | undefined; slot: number | undefined } | { ok: false }> {
+		// RRF >= 3.7.0-rc.2 reports every accelerometer's own slot in the object model, and each slot is
+		// independent - nothing needs re-activating, the recorder is simply armed as `M956 P<slot>`.
+		// (Reissuing `M955 C` here would even be harmful: the object model carries no `Q`, so it would
+		// silently drop a custom SPI clock, and it needlessly resets the object on the board.)
+		if (accel.slot !== undefined) {
+			return { ok: true, code: undefined, slot: accel.slot };
+		}
+		if (!usesNewAccelScheme()) {
+			return { ok: true, code: undefined, slot: undefined };
 		}
 		const built = await buildActivationCode(accel);
 		if (!built) {
@@ -596,10 +587,12 @@ export function useResonanceLab(host: HostAdapter) {
 		try {
 			const missing = new Set<string>();
 			for (const item of items) {
-				// Per-item, not a single machine-wide flag - a tool-changer can have boards on different
-				// firmware versions, and wiring-lookup is only meaningful for a board on the new scheme.
-				const canAddress = parseInt(item.id, 10) || 0;
-				if (usesNewAccelSchemeFor(canAddress) && !(await findExistingWiring(host, item))) {
+				// An object-model port (RRF >= 3.7.0-rc.2) is the wiring, so nothing can be missing.
+				if (item.slot !== undefined) {
+					continue;
+				}
+				// Wiring lookup is only meaningful once the machine speaks the new scheme.
+				if (usesNewAccelScheme() && !(await resolveAccelWiring(host, item))) {
 					missing.add(item.id);
 				}
 			}
@@ -794,7 +787,7 @@ export function useResonanceLab(host: HostAdapter) {
 	 */
 	async function readAccelOrientation(accelId: string): Promise<number> {
 		const canAddress = parseInt(accelId, 10) || 0;
-		if (usesNewAccelSchemeFor(canAddress)) {
+		if (usesNewAccelScheme() || findAccelModelEntry(host.model(), canAddress)?.slot !== undefined) {
 			return liveAccelState(canAddress)?.orientation ?? 20;
 		}
 		try {
@@ -814,7 +807,7 @@ export function useResonanceLab(host: HostAdapter) {
 	 */
 	async function readAccelRate(accelId: string): Promise<number> {
 		const canAddress = parseInt(accelId, 10) || 0;
-		if (usesNewAccelSchemeFor(canAddress)) {
+		if (usesNewAccelScheme() || findAccelModelEntry(host.model(), canAddress)?.slot !== undefined) {
 			const rate = liveAccelState(canAddress)?.samplingRate;
 			return rate !== undefined && rate >= 100 && rate <= 20000 ? rate : 1000;
 		}
@@ -829,9 +822,9 @@ export function useResonanceLab(host: HostAdapter) {
 
 	// ── Motor waveform tuning (motortune task) ────────────────────────────────────
 	// Never hardcode a board list here (upstream's own list has already grown once and will grow
-	// again) - detection is: firmware gate (visibility) + axis.phaseStep (command choice) + IOIN chip
-	// read (informative) + a runtime query-form probe (the actual capability check, in measure()).
-	const MIN_TUNE_FIRMWARE = "3.7.0-rc.1";
+	// again) - detection is: firmware gate (visibility) + axis.phaseStep / driver mode (command choice)
+	// + IOIN chip read (informative) + a runtime query-form probe (the actual capability check, in
+	// measure()). See ../config/motorTuneSupport.ts for the pure parts of that.
 
 	interface TuneModelAxis {
 		letter?: string;
@@ -848,32 +841,21 @@ export function useResonanceLab(host: HostAdapter) {
 		return axes.find((a) => a.letter === motor.motor);
 	}
 
-	/** The board carrying a motor's first driver (mainboard when board is 0/absent). */
-	function driverBoardFirmware(motor: string): string | null {
-		const m = host.model() as {
-			boards?: Array<{ canAddress?: number | null; firmwareVersion?: string } | null>;
-			move?: { axes?: Array<TuneModelAxis> };
-		};
-		const axis = m.move?.axes?.find((a) => a.letter === motor);
-		const boardId = axis?.drivers?.[0]?.board ?? 0;
-		return m.boards?.find((b) => b && (b.canAddress ?? 0) === boardId)?.firmwareVersion ?? null;
-	}
-
 	// Gate: the mainboard AND the driver's own board (which may be a CAN expansion board) must both
 	// be new enough. Fails closed (R2) - missing/unparseable firmware means unsupported, never "assume
 	// it's fine". This is what keeps the task off the rail entirely below MIN_TUNE_FIRMWARE (see
 	// goalTasks above), not merely disabled - the command may not exist in the firmware at all.
-	const motorTuneSupported = computed(() => {
-		const main = (host.model() as { boards?: Array<{ firmwareVersion?: string } | null> }).boards?.[0]?.firmwareVersion ?? null;
-		if (!firmwareAtLeast(main, MIN_TUNE_FIRMWARE)) {
-			return false;
-		}
-		return motorOptions.value.some((o) => firmwareAtLeast(driverBoardFirmware(o.motor), MIN_TUNE_FIRMWARE));
-	});
+	const motorTuneSupported = computed(() => motorTuneSupportedFor(host.model(), motorOptions.value.map((o) => o.motor)));
 
-	// Command choice: phase stepping (free phase, harmonics 2 & 4) vs the driver's sine table
-	// (constrained to 0/180, harmonic 4 only - coil imbalance isn't representable there).
-	const tunePhaseStepping = computed(() => tuneAxis()?.phaseStep === true);
+	// Command choice: a driver that commutates in software - an axis in phase stepping, or a driver in
+	// closed / assisted-open loop (`direct` mode), which DWC's own plugin also tunes with M970.3 - takes a
+	// free-phase correction (harmonics 2 & 4); anything else has only the driver's sine table (phase
+	// constrained to 0/180, harmonic 4 only - coil imbalance isn't representable there). The name is
+	// historical: it is bound by both page templates, which read it as "free-phase correction".
+	const tunePhaseStepping = computed(() => {
+		const motor = activeMotor.value;
+		return motor ? usesFreePhaseCorrection(host.model(), motor.motor) : false;
+	});
 	const tuneCommand = computed(() => (tunePhaseStepping.value ? "M970.3" : "M569.2"));
 	const tuneHarmonicList = computed(() => (tunePhaseStepping.value ? [2, 4] : [4]));
 	const tuneConstrain = computed(() => !tunePhaseStepping.value);
@@ -1087,18 +1069,21 @@ export function useResonanceLab(host: HostAdapter) {
 				// orientation) into every capture below, so the neutralisation survives R2's per-capture
 				// reissue instead of being undone by it.
 				const prevOrientation = await readAccelOrientation(accel.id);
-				const accelCanAddress = parseInt(accel.id, 10) || 0;
+				const configuresByC = accel.slot !== undefined || usesNewAccelScheme();
 				let neutralCode: string | undefined;
 				let neutralSlot: number | undefined;
-				if (usesNewAccelSchemeFor(accelCanAddress)) {
+				if (configuresByC) {
 					const built = await buildActivationCodeWithOrientation(accel, "20");
 					if (!built) {
 						error.value = t("orientation.wiringMissing");
 						return;
 					}
-					neutralCode = built.code;
+					// Slots are independent from RRF 3.7.0-rc.2: the neutral orientation stays in force on its
+					// own until it is restored below, so captures just arm the slot. Earlier single-slot
+					// firmware must re-send it before every capture instead (see orchestrator.ts).
+					neutralCode = accel.slot !== undefined ? undefined : built.code;
 					neutralSlot = built.slot;
-					await io.sendCode(neutralCode);
+					await io.sendCode(built.code);
 				} else {
 					await io.sendCode(`M955 P${accel.id} I20`);
 				}
@@ -1119,7 +1104,7 @@ export function useResonanceLab(host: HostAdapter) {
 					orientationResult.value = { solution: solveOrientation(moveResults, gravity), accelId: accel.id, coupling: Math.max(moveResults.X!.coupling, moveResults.Y!.coupling) };
 					lastResult.value = null;
 				} finally {
-					if (usesNewAccelSchemeFor(accelCanAddress)) {
+					if (configuresByC) {
 						const restoreCode = await buildActivationCodeWithOrientation(accel, String(prevOrientation));
 						if (restoreCode) {
 							await io.sendCode(restoreCode.code);
@@ -1414,7 +1399,7 @@ export function useResonanceLab(host: HostAdapter) {
 	 */
 	async function verifyAxis(
 		accel: AccelerometerRef, before: { axis: string; analysis: CaptureAnalysis }, sampleRate: number,
-		activationCode: string | undefined, activationSlot: number,
+		activationCode: string | undefined, activationSlot: number | undefined,
 	): Promise<{ reduction: number; labels: Array<number>; beforeData: Array<number>; afterData: Array<number> }> {
 		const minFreq = adv.value.startFreq;
 		const maxFreq = adv.value.endFreq;
@@ -2080,24 +2065,27 @@ export function useResonanceLab(host: HostAdapter) {
 			return;
 		}
 		const canAddress = parseInt(o.accelId, 10) || 0;
-		if (usesNewAccelSchemeFor(canAddress)) {
+		const accel = accelItems.value.find((a) => a.id === o.accelId);
+		if (accel?.slot !== undefined || usesNewAccelScheme()) {
 			// A bare `M955 P<id> I<n>` is a silent no-op here (R1: I is only read inside the C-seen
 			// branch) - build a full activation line with the just-solved orientation instead.
-			const accel = accelItems.value.find((a) => a.id === o.accelId);
 			const code = accel ? await buildActivationCodeWithOrientation(accel, o.solution.iParam) : null;
 			if (!code) {
 				error.value = t("orientation.wiringMissing");
 				return;
 			}
 			await host.sendCode(code.code);
-			// Persist to the registry, not just apply at runtime - config.g's own I goes stale the
-			// instant this runs, so this is what makes the NEXT reactivation of this board (the very
-			// next capture, per R2) pick up the orientation just solved here, rather than a stale one.
-			const live = liveAccelState(canAddress);
-			saveOrientationEntry({
-				canAddress, uniqueId: live?.uniqueId ?? null, orientation: parseInt(o.solution.iParam, 10),
-				resolution: live?.resolution, samplingRate: live?.samplingRate,
-			});
+			if (accel?.slot === undefined) {
+				// Persist to the registry, not just apply at runtime - config.g's own I goes stale the
+				// instant this runs, so this is what makes the NEXT reactivation of this board (the very
+				// next capture, per R2) pick up the orientation just solved here, rather than a stale one.
+				// (Not needed from RRF 3.7.0-rc.2, where the object model always reports the live value.)
+				const live = liveAccelState(canAddress);
+				saveOrientationEntry({
+					canAddress, uniqueId: live?.uniqueId ?? null, orientation: parseInt(o.solution.iParam, 10),
+					resolution: live?.resolution, samplingRate: live?.samplingRate,
+				});
+			}
 		} else {
 			await host.sendCode(`M955 P${o.accelId} I${o.solution.iParam}`); // unchanged legacy path
 		}
@@ -2228,12 +2216,11 @@ export function useResonanceLab(host: HostAdapter) {
 		}
 		pendingShaperFit.value = null; // mutually exclusive with a shaper save - see chooseShaperScope
 		pendingAccelSave.value = { accel, orientation: o.solution.iParam };
-		const canAddress = parseInt(accel.id, 10) || 0;
 		// Multi-accelerometer firmware always saves to config.g regardless of scope (each board gets
 		// its own independent slot there - see planAccelSave) - the "this tool only" option from the
 		// single-slot era isn't a real second choice any more, so the dialog is never opened for this
 		// branch at all, not merely defaulted through it.
-		if (!usesNewAccelSchemeFor(canAddress) || usesMultiAccelSchemeFor(canAddress) || accelItems.value.length <= 1) {
+		if (accel.slot !== undefined || !usesNewAccelScheme() || usesMultiAccelScheme() || accelItems.value.length <= 1) {
 			await chooseShaperScope("all");
 			return;
 		}
@@ -2342,7 +2329,7 @@ export function useResonanceLab(host: HostAdapter) {
 			strayAccelLines.value = [];
 			return;
 		}
-		const anyMultiAccel = items.some((item) => usesMultiAccelSchemeFor(parseInt(item.id, 10) || 0));
+		const anyMultiAccel = usesMultiAccelScheme();
 		if (!anyMultiAccel) {
 			strayAccelLines.value = [];
 			return;
@@ -2372,7 +2359,15 @@ export function useResonanceLab(host: HostAdapter) {
 		migrationDialogError.value = "";
 		migrationSaved.value = false;
 		try {
-			migrationPlan.value = await planAccelMigration(host, strayAccelLines.value);
+			// Boards the object model already gives a slot keep it (RRF >= 3.7.0-rc.2), so migrating never
+			// renumbers a machine that is running fine - only boards RRF hasn't placed get a fresh one.
+			const runningSlots = new Map<number, number>();
+			for (const item of accelItems.value) {
+				if (item.slot !== undefined) {
+					runningSlots.set(accelCanAddress(item), item.slot);
+				}
+			}
+			migrationPlan.value = await planAccelMigration(host, strayAccelLines.value, runningSlots);
 			migrationDialogOpen.value = true;
 		} catch (e) {
 			host.notify("error", "Resonance Lab", (e as Error).message || String(e));
@@ -2446,6 +2441,7 @@ export function useResonanceLab(host: HostAdapter) {
 		beltPhase,
 		beltEstablishingTiming,
 		accelItems,
+		accelSetupHints,
 		accelItemsForPicker,
 		selectedAccelWiringMissing,
 		selectedAccel,

@@ -5,20 +5,16 @@
  * without a printer. Nothing here writes anything without the caller explicitly calling
  * `applyEditPlan` on a plan it has shown the user - `plan*` functions are pure previews.
  */
-import type { AccelerometerRef } from "../capture/orchestrator";
+import { accelCanAddress, type AccelerometerRef } from "../capture/orchestrator";
 import type { HostAdapter } from "../core/host";
 import {
 	findAccelWiring, findAllAccelWiring, findOtherAccelWiring, parseCPrefix, type AccelWiring,
 } from "./accelWiring";
-// The /firmware subpath, not the bare "dwc-gcode-core" root specifier: DWC 3.6's older webpack/TS
-// build can't resolve the root ("." export has no "require" condition for this ESM-only package),
-// even though a documented subpath - like the /edit import right below - always works.
-import { firmwareAtLeast } from "dwc-gcode-core/firmware";
 import {
 	appendDirective, detectEol, diffLines, findDirectives, parseLines, replaceDirective,
 	replaceLine, serializeLines, setParam, type DiffLine, type GcodeLine,
 } from "dwc-gcode-core/edit";
-import { MIN_ACCEL_FIRMWARE, MIN_MULTI_ACCEL_FIRMWARE } from "./firmwareVersion";
+import { accelScheme } from "./accelScheme";
 
 /** Same-day, sortable audit stamp for a "; Resonance Lab <date>" comment above an appended directive. */
 function dateStamp(): string {
@@ -148,41 +144,24 @@ async function getGcodeText(path: string, read: () => Promise<string>): Promise<
 	return cachedGcodeText.get(path)!;
 }
 
-/**
- * Whether THIS SPECIFIC accelerometer's own board (`canAddress`, 0 = mainboard) runs firmware new
- * enough for the single-accelerometer scheme - NOT `boards[0]` alone. A remote `M955` is forwarded
- * whole to the board its `C` prefix names and parsed by THAT board's own firmware, which is flashed
- * independently of the mainboard's, so gating on the mainboard alone (an earlier version of this
- * function did exactly that) can build a P-omitted line for a toolboard that hasn't been updated yet
- * - confirmed against a real field report ("Tool Board 1LC ... Error M955: missing parameter 'P'")
- * where the mainboard had been updated to 3.7.0-rc.1+ but that toolboard had not. Same threshold and
- * mirrors useResonanceLab.ts's own `usesNewAccelSchemeFor`, re-derived here under a deliberately
- * different name because this module takes `host` as a plain argument, not a live store binding.
- */
-function firmwareUsesNewAccelScheme(host: HostAdapter, canAddress: number): boolean {
-	const boards = (host.model() as { boards?: Array<{ canAddress?: number | null; firmwareVersion?: string } | null> } | null)?.boards ?? [];
-	const fw = boards.find((b) => b && (b.canAddress ?? 0) === canAddress)?.firmwareVersion ?? null;
-	return firmwareAtLeast(fw, MIN_ACCEL_FIRMWARE);
-}
-
-/**
- * Whether THIS SPECIFIC board's own firmware supports RRF's multi-accelerometer scheme (up to 10
- * independent slots - `RepRapFirmware@ee3c80b`/`Duet3Expansion@73549e0`, `"3.7.0-rc.1+1"`), NOT just
- * the single-slot scheme `firmwareUsesNewAccelScheme` checks. A board can satisfy that one without
- * this one (plain rc.1) - the two thresholds are independent, mirroring
- * `MIN_ACCEL_FIRMWARE`/`MIN_MULTI_ACCEL_FIRMWARE` being separate constants for the same reason.
- */
-function firmwareSupportsMultiAccel(host: HostAdapter, canAddress: number): boolean {
-	const boards = (host.model() as { boards?: Array<{ canAddress?: number | null; firmwareVersion?: string } | null> } | null)?.boards ?? [];
-	const fw = boards.find((b) => b && (b.canAddress ?? 0) === canAddress)?.firmwareVersion ?? null;
-	return firmwareAtLeast(fw, MIN_MULTI_ACCEL_FIRMWARE);
-}
-
 /** Every accelerometer slot (M955's P value) already claimed by an active M955 C line in this text -
  *  reuses `findAllAccelWiring`'s parsing rather than re-deriving it, since `AccelWiring.slot` already
  *  carries exactly this. */
 function usedSlots(gcodeText: string): Set<number> {
 	return new Set(findAllAccelWiring(gcodeText).map((w) => w.slot));
+}
+
+/**
+ * The slot to give a board that has no config.g line yet: the slot it already occupies on the
+ * running machine (`preferred`, from the object model) when neither config.g nor `alsoExclude` gives
+ * that number to a different board, else the lowest free one - so a save keeps the numbering RRF is
+ * already using whenever it can, instead of silently renumbering the machine at the next boot.
+ */
+function preferredFreeSlot(configText: string, preferred: number | undefined, alsoExclude: ReadonlySet<number> = new Set()): number {
+	if (preferred !== undefined && !usedSlots(configText).has(preferred) && !alsoExclude.has(preferred)) {
+		return preferred;
+	}
+	return lowestFreeSlot(configText, alsoExclude);
 }
 
 /**
@@ -210,7 +189,7 @@ function lowestFreeSlot(configText: string, alsoExclude: ReadonlySet<number> = n
  * trust this accelerometer's wiring to be" - a second copy risks a save and a capture disagreeing.
  */
 export async function findExistingWiring(host: HostAdapter, accel: AccelerometerRef): Promise<AccelWiring | null> {
-	const canAddress = parseInt(accel.id, 10) || 0;
+	const canAddress = accelCanAddress(accel);
 	const tool = accel.toolNumber;
 	if (tool !== undefined && tool >= 0) {
 		const hit = findAccelWiring(await getGcodeText(tpostPath(host, tool), () => readTpostOrEmpty(host, tool)), canAddress);
@@ -219,6 +198,33 @@ export async function findExistingWiring(host: HostAdapter, accel: Accelerometer
 		}
 	}
 	return findAccelWiring(await getGcodeText(configPath(host), () => readConfig(host)), canAddress);
+}
+
+/**
+ * `accel`'s wiring for building an M955 line. On RRF >= 3.7.0-rc.2 the object model reports the `C`
+ * value itself (`sensors.accelerometers[].port`) and the slot it occupies, so those are authoritative -
+ * they are what is actually configured right now, which config.g's text may not be (a runtime M955, a
+ * macro, `C{...}` expression syntax). Two pins are the norm on an SPI-connected STM32 toolboard (CS
+ * then INT, e.g. "121.spi.cs.acc+int.acc") and pass through untouched. The one thing the object model
+ * still doesn't carry is `Q` (SPI clock), so that alone is looked up in the files, best-effort - a
+ * missing or unreadable file must not stop an object-model-known accelerometer being saved or
+ * re-oriented, it just leaves Q at the firmware default. Before rc.2 this is `findExistingWiring`.
+ */
+export async function resolveAccelWiring(host: HostAdapter, accel: AccelerometerRef): Promise<AccelWiring | null> {
+	if (accel.slot === undefined || !accel.port) {
+		return findExistingWiring(host, accel);
+	}
+	let spiFrequency: number | undefined;
+	try {
+		spiFrequency = (await findExistingWiring(host, accel))?.spiFrequency;
+	} catch {
+		// Q is a nicety here - see above
+	}
+	const wiring: AccelWiring = { cSpec: accel.port, canAddress: accelCanAddress(accel), slot: accel.slot };
+	if (spiFrequency !== undefined) {
+		wiring.spiFrequency = spiFrequency;
+	}
+	return wiring;
 }
 
 export type ShaperScope = "all" | "tool";
@@ -293,10 +299,13 @@ function accelLineForBoard(canAddress: number): (line: GcodeLine) => boolean {
 export async function planAccelSave(
 	host: HostAdapter, accel: AccelerometerRef, scope: ShaperScope, orientation: string,
 ): Promise<ShaperSaveResult> {
-	const canAddress = parseInt(accel.id, 10) || 0; // "121.0" -> 121, "0" -> 0
+	const canAddress = accelCanAddress(accel);
 	const notes: Array<string> = [];
+	// An accelerometer the object model reports a slot for is by definition on multi-accelerometer
+	// firmware (RRF >= 3.7.0-rc.2) - whatever its own board's version string says.
+	const slotKnown = accel.slot !== undefined;
 
-	if (!firmwareUsesNewAccelScheme(host, canAddress)) {
+	if (!slotKnown && accelScheme(host.model()) === "legacy") {
 		const path = configPath(host);
 		const text = await readConfig(host);
 		const plan = buildPlan(
@@ -309,12 +318,12 @@ export async function planAccelSave(
 	// Wherever this accelerometer's wiring currently lives (tpost first, else config.g) is what we
 	// need C/Q from, REGARDLESS of where the user is choosing to SAVE to now - "scope" answers "where
 	// should this become the boot-time state", not "where is the wiring recorded".
-	const wiring = await findExistingWiring(host, accel);
+	const wiring = await resolveAccelWiring(host, accel);
 	if (!wiring) {
 		throw new Error("This accelerometer's wiring isn't recorded anywhere yet - run the orientation task with it active first.");
 	}
 
-	if (firmwareSupportsMultiAccel(host, canAddress)) {
+	if (slotKnown || accelScheme(host.model()) === "multi") {
 		// Multi-slot (RRF >= 3.7.0-rc.1+1): always config.g, never a scope choice. Each board has its
 		// OWN slot now, so saving one can never displace another - the entire reason the scope dialog
 		// exists below (R9, single-accelerometer plan) doesn't apply here. `scope` is accepted for a
@@ -325,7 +334,7 @@ export async function planAccelSave(
 		// board's slot on a routine orientation update. Only a board with no config.g entry yet (its
 		// wiring was found via tpost, or this is its first-ever save) gets a freshly assigned slot.
 		const existingConfigWiring = findAccelWiring(configText, canAddress);
-		const slot = existingConfigWiring?.slot ?? lowestFreeSlot(configText);
+		const slot = existingConfigWiring?.slot ?? preferredFreeSlot(configText, accel.slot);
 		const newLine = `M955 P${slot} C"${wiring.cSpec}" I${orientation}${wiring.spiFrequency ? ` Q${wiring.spiFrequency}` : ""}`;
 		const isThisBoard = accelLineForBoard(canAddress);
 		const plan = buildPlan(configPath(host), configText, "M955", isThisBoard, (raw) => setParam(raw, "I", orientation), newLine);
@@ -461,9 +470,13 @@ export interface AccelMigrationPlan {
  * Orientation is carried over from each stray line's own I value where present (`orientationOf`),
  * defaulting to identity otherwise - migrating shouldn't silently reset an already-solved orientation.
  * A pure preview, same as every other `plan*` function here - nothing is written until the caller
- * applies each returned plan (`applyEditPlan`) after showing them to the user.
+ * applies each returned plan (`applyEditPlan`) after showing them to the user. `runningSlots` maps a
+ * board's CAN address to the slot RRF currently has it in (RRF >= 3.7.0-rc.2 reports this), which a
+ * board without a config.g line yet keeps when it's free.
  */
-export async function planAccelMigration(host: HostAdapter, strayLines: Array<StrayAccelLine>): Promise<AccelMigrationPlan> {
+export async function planAccelMigration(
+	host: HostAdapter, strayLines: Array<StrayAccelLine>, runningSlots: ReadonlyMap<number, number> = new Map(),
+): Promise<AccelMigrationPlan> {
 	const removals: Array<DirectiveEditPlan> = [];
 	const additions: Array<DirectiveEditPlan> = [];
 
@@ -497,7 +510,7 @@ export async function planAccelMigration(host: HostAdapter, strayLines: Array<St
 	const assignedThisBatch = new Set<number>();
 	for (const { toolNumber, wiring } of strayLines) {
 		const existing = findAccelWiring(configText, wiring.canAddress);
-		const slot = existing?.slot ?? lowestFreeSlot(configText, assignedThisBatch);
+		const slot = existing?.slot ?? preferredFreeSlot(configText, runningSlots.get(wiring.canAddress), assignedThisBatch);
 		assignedThisBatch.add(slot);
 		const orientation = orientationOf(tpostTextByTool.get(toolNumber) ?? "", wiring.canAddress);
 		const newLine = `M955 P${slot} C"${wiring.cSpec}" I${orientation}${wiring.spiFrequency ? ` Q${wiring.spiFrequency}` : ""}`;

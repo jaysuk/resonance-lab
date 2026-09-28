@@ -255,6 +255,51 @@ describe("Resonance Lab smoke", () => {
 		}
 	});
 
+	// RRF 3.7.0-rc.2 moved accelerometers from boards[].accelerometer to sensors.accelerometers[] - a
+	// page that only read the old place would report "no accelerometer" on every rc.2 machine.
+	it("finds an accelerometer in sensors.accelerometers[] (RRF 3.7.0-rc.2), where boards[] no longer carries one", () => {
+		setConnected(true);
+		setModel(loadObjectModel({
+			boards: [{ shortName: "MB6HC", firmwareVersion: "3.7.0-rc.2", canAddress: 0 }],
+			sensors: { accelerometers: [{ orientation: 20, points: 0, port: "spi.cs3+io4.in", resolution: 10, runs: 0, samplingRate: 1000 }] },
+		}));
+		const wrapper = mountInDwc(ResonanceLabPage);
+		try {
+			expect(wrapper.text()).not.toContain("resonanceLab.accelMissing");
+			expect(wrapper.text()).toContain("resonanceLab.emptyState");
+		} finally {
+			wrapper.unmount();
+		}
+	});
+
+	it("arms a measurement on rc.2 by the accelerometer's own slot, with no M955 in front of it", async () => {
+		setConnected(true);
+		setModel(loadObjectModel({
+			boards: [
+				{ shortName: "MB6HC", firmwareVersion: "3.7.0-rc.2", canAddress: 0 },
+				{ shortName: "SHT36v3", firmwareVersion: "3.7.0-rc.2", canAddress: 121 },
+			],
+			// The toolboard's accelerometer was configured as slot 2, with slots 0 and 1 unused
+			sensors: { accelerometers: [null, null, { orientation: 20, port: "121.spi.cs.acc+int.acc", resolution: 10, runs: 0, samplingRate: 1000 }] },
+		}));
+		method.value = "move";
+		const wrapper = mountInDwc(ResonanceLabPage);
+		try {
+			const before = sentCodes().length;
+			const measureBtn = wrapper.findAll("button").find((b) => b.text().includes("resonanceLab.controls.measure"));
+			expect(measureBtn).toBeTruthy();
+			await measureBtn!.trigger("click");
+			await new Promise((r) => setTimeout(r, 50));
+			const sent = sentCodes().slice(before);
+			expect(sent.find((c) => c.includes("M956"))).toMatch(/M956 P2 S/); // its slot, not P121.0 or P0
+			expect(sent.some((c) => c.startsWith("M955"))).toBe(false);
+		} finally {
+			method.value = "sweep";
+			measurementRunning.value = false;
+			wrapper.unmount();
+		}
+	});
+
 	// Each task renders only its own params (TaskDef.params) - the motor task needs its own motor
 	// picker (not the plain axis picker every other axis-using task gets) plus its four params.
 	it("selecting the motor task renders its own picker and params, not the plain axis picker", () => {

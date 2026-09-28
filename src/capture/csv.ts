@@ -19,6 +19,12 @@ export interface AccelCapture {
 // "Rate: 1342, overflows: 0", trailing commas from the CSV writer...) - match loosely.
 const TRAILER_RE = /rate\D{0,3}(\d+(?:\.\d+)?)\D+overflows\D{0,3}(\d+)/i;
 
+// What RRF writes INTO the file, in place of the trailer, when a run fails part way (Accelerometers.cpp):
+// "Failed to collect data from accelerometer", "Too many spurious interrupts from accelerometer",
+// "Failed to start accelerometer", and - for a CAN-connected board, RRF >= 3.7.0-rc.2 - "Received bad
+// data", "Received mismatched data" and "Board restarted before the collection was complete".
+const FIRMWARE_FAILURE_RE = /^(?:failed to|too many spurious|received (?:bad|mismatched) data|board restarted)/i;
+
 /** True once the capture file carries its rate/overflows trailer, i.e. the firmware finished writing. */
 export function hasCaptureTrailer(text: string): boolean {
 	return TRAILER_RE.test(text.slice(-200));
@@ -26,6 +32,11 @@ export function hasCaptureTrailer(text: string): boolean {
 
 export function parseAccelCsv(text: string): AccelCapture {
 	const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
+	// A run the firmware aborted says why in the file itself - report that, not a vague "truncated".
+	const failure = lines.slice(-3).find((l) => FIRMWARE_FAILURE_RE.test(l.trim()));
+	if (failure) {
+		throw new Error(`The accelerometer run failed: ${failure.trim()}`);
+	}
 	if (lines.length < 3) {
 		throw new Error("Accelerometer CSV too short");
 	}

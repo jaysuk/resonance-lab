@@ -26,3 +26,20 @@ export const MIN_ACCEL_FIRMWARE = "3.7.0-rc.1";
  * "3.7.0-rc.1".
  */
 export const MIN_MULTI_ACCEL_FIRMWARE = "3.7.0-rc.1+1";
+
+/**
+ * Minimum firmware for `motortune` (`M970.3` / `M569.2`'s waveform-correction sub-command), needed on
+ * both the mainboard and the driver's own board. A third constant rather than a reuse of
+ * `MIN_ACCEL_FIRMWARE`, for the same reason that one isn't shared with the multi-accelerometer gate:
+ * they gate unrelated capabilities that only coincide on a release. Note a mainboard without local
+ * phase stepping (Duet 3 Mini 5+, MB6XD) only gained `M970`/`M970.3` - to configure phase stepping on
+ * CAN-connected drivers - in 3.7.0-rc.2; on those it passes this gate but the runtime probe in the
+ * tuning run reports the driver as unsupported until then.
+ */
+export const MIN_TUNE_FIRMWARE = "3.7.0-rc.1";
+
+/**
+ * Minimum firmware for the `spi.cs.acc` / `int.acc` pin names on the SPI-accelerometer toolboards
+ * (see `accelBoards.ts`) - needed on both the mainboard and that board.
+ */
+export const MIN_SPI_ACCEL_FIRMWARE = "3.7.0-rc.2";

@@ -23,7 +23,7 @@ Vite) and DWC 3.6 (Vue 2.7 / Vuetify 2 / Vuex 3 / webpack) share everything exce
 src/
   analysis/  capture/  config/  state.ts  updateCheck.ts  i18n/   ← shared, version-neutral
   core/host.ts            HostAdapter: the ~12-call seam onto DWC
-  core/useResonanceLab.ts ALL page behaviour, host-injected (~1300 lines)
+  core/useResonanceLab.ts ALL page behaviour, host-injected (~2500 lines)
   ui37/                   Vuetify 4 template + Pinia host + index.ts + SummaryPanel
   ui36/                   Vuetify 2 template + Vuex host + index.ts + AboutDialog/HelpTip
   index.ts                re-exports ui37 (what a plain build.bat ships)
@@ -81,7 +81,7 @@ first if only the 3.6 build breaks after adding a new shared module.
   omitted from the motor picker entirely rather than assuming 16, since a wrong assumed microstepping
   would produce a confident analysis at the wrong frequency.
 - **`motortune` task** (`src/analysis/motorTuning.ts`, `src/config/firmwareVersion.ts`,
-  `src/config/driverChip.ts`) — searches for and writes a motor's current-waveform correction, unlike
+  `src/config/driverChip.ts`, `src/config/motorTuneSupport.ts`) — searches for and writes a motor's current-waveform correction, unlike
   `motor`'s analysis-only measurement. **Gated on `boards[].firmwareVersion` ≥ `3.7.0-rc.1` on both
   the mainboard and the driver's own board** (fails closed on missing/unparseable versions — the task
   is hidden from the rail entirely below that version, not merely disabled, since `M970.3`/`M569.2`'s
@@ -91,10 +91,19 @@ first if only the 3.6 build breaks after adding a new shared module.
   strips it before parsing, or every STM32H7 board — the main phase-stepping platform — would fail
   the gate. **Never hardcode a board list** (checked: the stock DWC plugin's own list has already
   grown once, `["MB6HC"]` → `["MB6HC","EXP3HC","EXP1HCL","M23CL"]`, and the object model carries no
-  driver chip-type field to check against anyway) — command choice comes from `axis.phaseStep`
-  (`M970.3`, free phase, harmonics 2 & 4, if true; else `M569.2`'s sine table, phase constrained to
-  0/180, harmonic 4 only — harmonic 2/coil-imbalance isn't representable there) and a runtime
-  query-form probe before any write. The chip itself (informative only, never gating) is identified
+  driver chip-type field to check against anyway) — command choice comes from
+  `motorTuneSupport.ts`'s `usesFreePhaseCorrection` (`M970.3`, free phase, harmonics 2 & 4, if
+  `axis.phaseStep` **or** the driver's `boards[].drivers[].config.mode` is `direct`/`assistedOpen` — a
+  closed-loop driver has `phaseStep` false but still takes `M970.3`, as DWC's own plugin does; else
+  `M569.2`'s sine table, phase constrained to 0/180, harmonic 4 only — harmonic 2/coil-imbalance isn't
+  representable there) and a runtime query-form probe before any write. `config.mode` is the
+  `DriverMode` enum's integer on the wire (4 = `direct`); named strings are accepted too. **DWC's own
+  plugin keeps a board list** (`waveformTuningBoards`: `MB6HC`, `EXP3HC`, `EXP1HCL`, `M23CL`,
+  `TOOLINDX`) — the 1HCL, M23CL and INDX toolboards are supported here *without* one, on firmware
+  version + command choice + the probe, and `test/motorTuneSupport.test.ts` pins that for each of them.
+  RRF 3.7.0-rc.2 also let `M970`/`M970.3` run on mainboards without local phase stepping (Duet 3 Mini
+  5+, MB6XD) to configure CAN-connected drivers; on those an rc.1 mainboard passes the version gate but
+  fails the probe, which reports the driver as unsupported. The chip itself (informative only, never gating) is identified
   by reading its IOIN register's VERSION byte over `M569.2 P<drv> R<addr>` (UART parts at `0x06`, SPI
   at `0x04`) — the same method the sibling `duet-tmc-tuner` plugin uses, since this is the only
   reliable way to tell a TMC5160/2240 (has a waveform correction) from a TMC2208/2209 (doesn't) on
@@ -117,8 +126,9 @@ first if only the 3.6 build breaks after adding a new shared module.
   accelerometer object**, resetting orientation to identity unless `I` is resupplied in the *same*
   command (`I` is now only ever read inside the `gb.Seen('C')` branch — a bare `M955 P<id> I<n>`, with
   no `C`, is a silent no-op on this firmware). Same `firmwareAtLeast` machinery as `motortune` but a
-  **separate** constant (`MIN_ACCEL_FIRMWARE`, not `MIN_TUNE_FIRMWARE`) since the two gate unrelated
-  capabilities that only coincide on this release. Below the gate every code path is byte-identical to
+  **separate** constant (`MIN_ACCEL_FIRMWARE`, not `MIN_TUNE_FIRMWARE` — both live in
+  `firmwareVersion.ts`, alongside `MIN_MULTI_ACCEL_FIRMWARE` and `MIN_SPI_ACCEL_FIRMWARE`) since the
+  gates cover unrelated capabilities that only coincide on some releases. Below the gate every code path is byte-identical to
   pre-`81d68e1` behaviour.
   - **`P0` is mandatory in `M955` AND `M956`, in EVERY form (configure, query, arm) — never omitted,
     even alongside `C`.** Confirmed directly against RRF source (`Accelerometers.cpp`'s
@@ -150,15 +160,18 @@ first if only the 3.6 build breaks after adding a new shared module.
       separately `Error M955: parameter 'P' too high` (`readAccelOrientation`/`readAccelRate` sending
       the old board.driver id, e.g. `121`, against a cap of `{0}`). An earlier pass at this fix
       mis-attributed the first symptom to a mainboard/toolboard firmware mismatch instead - see below.
-  - **Also gated per-accelerometer on THAT accelerometer's own board firmware
-    (`useResonanceLab.ts`'s `usesNewAccelSchemeFor(canAddress)`, `machineConfig.ts`'s
-    `firmwareUsesNewAccelScheme(host, canAddress)`) — never `boards[0]` (the mainboard) alone.** A
-    remote `M955` (its `C` carries a CAN-address prefix) is forwarded whole to the board that prefix
-    names and parsed there by THAT board's own firmware, which is flashed and updated independently of
-    the mainboard's, so this is still the more correct check in general. **This was NOT, however, what
-    explained the field report above** - that reporter had RC1 on both boards; a real fix (P0 above)
-    turned out to have nothing to do with per-board firmware. Kept because the underlying property
-    (a toolboard's firmware CAN genuinely lag the mainboard's) is real, just not what was seen here.
+  - **The scheme is decided by the MAINBOARD's firmware alone** (`src/config/accelScheme.ts`'s
+    `accelScheme(model)` → `legacy` / `single` / `multi`, used by both `useResonanceLab.ts` and
+    `machineConfig.ts`) — never by the firmware of the board an accelerometer happens to be on. `M955`/
+    `M956` are validated on the mainboard first (`P` is `MustSee` and range-limited there, `C` is parsed
+    there, the slot table lives there — `Accelerometers.cpp`); a remote board only receives the forwarded
+    parameters over CAN. So on a mixed-version machine the mainboard's rules apply to every
+    accelerometer: a legacy `P<board.driver>` line is always rejected by an updated mainboard, and a
+    toolboard that hasn't been updated simply ignores the `C`/`Q` it doesn't know. **This replaces an
+    earlier per-accelerometer-board gate** that had been justified by a field report ("Tool Board 1LC
+    ... missing parameter 'P'") which turned out to be caused by `P0` being omitted entirely on RC1
+    boards on both sides, not by mixed firmware. An object model that reports slots
+    (`sensors.accelerometers[]`) is `multi` whatever version string it carries.
   - **`useResonanceLab.ts`'s `buildActivationCode` reissues the full `M955 C"..." I<n> Q<freq> R<res>
     S<rate>` line before *every single measurement*, unconditionally** — never "skip if already
     active", since nothing tells this plugin whether another actor repointed the active accelerometer
@@ -166,7 +179,7 @@ first if only the 3.6 build breaks after adding a new shared module.
     `activationCode` string and, when present, send it and THEN sample `runsBefore` (never the other
     way — sampling first would snapshot the about-to-be-deleted object's run counter, and completion
     detection would silently fall back to file polling on every single capture, forever).
-  - **The `C`/`Q` wiring string appears in no object-model field anywhere** — it only ever exists as
+  - **Before rc.2 the `C`/`Q` wiring string appears in no object-model field anywhere** — it only ever exists as
     the text of an `M955` line in config.g or a tool's own `tpost<N>.g`. `machineConfig.ts`'s
     `findExistingWiring` checks that tool's `tpost<N>.g` first (cheap — reading costs nothing), then
     falls back to config.g; the same lookup is shared by activation (every capture) and by saving
@@ -216,8 +229,8 @@ first if only the 3.6 build breaks after adding a new shared module.
     `ParsedVersion` now carries an optional `build` field and `compareFirmwareVersions` adds it as a
     final tiebreaker *after* the existing prerelease-length comparison. Don't re-drop the `+N` suffix
     as "just metadata" - for this firmware line it's load-bearing.
-  - **A board's assigned slot number exists NOWHERE in the object model — only in the text of its own
-    `M955` line in config.g/`tpost<N>.g`.** Confirmed: neither firmware commit touches any object-model
+  - **Before rc.2, a board's assigned slot number exists NOWHERE in the object model — only in the text of its own
+    `M955` line in config.g/`tpost<N>.g`** (rc.2 changes this, see the next section). Confirmed: neither firmware commit touches any object-model
     file (`gh api .../commits/<sha> --jq '.files[].filename' | grep objectmodel` is empty for both, and
     the new code's own comment reads `// TODO add configuration info ... to the object model`).
     `boards[].accelerometer` stays singular per board (correct — a board still only ever has one slot)
@@ -228,7 +241,7 @@ first if only the 3.6 build breaks after adding a new shared module.
     `findAllAccelWiring` (plural) is the multi-slot-aware sibling of the existing single-line lookups,
     for scanning a whole file for every M955 line at once (used by slot-assignment and migration below).
   - **Saving now always goes to config.g — the "this tool only / all tools" scope dialog is skipped
-    entirely for boards on this firmware** (`useResonanceLab.ts`'s `usesMultiAccelSchemeFor`,
+    entirely for boards on this firmware** (`useResonanceLab.ts`'s `usesMultiAccelScheme`, i.e. `accelScheme(model) === "multi"`,
     `saveOrientationToConfig` calls `chooseShaperScope("all")` directly rather than opening the dialog).
     Each board gets its own independent slot in config.g now, so the single-slot era's real dilemma
     (only one board can be the boot-time default; everyone else needs a tpost re-assert) no longer
@@ -255,6 +268,59 @@ first if only the 3.6 build breaks after adding a new shared module.
     been reactivated under this scheme; the file's own last-written value is the only thing worth
     preserving. Removals are applied before additions, so a failure partway through a multi-board
     migration never leaves a board deleted from tpost *and* missing from config.g at once.
+- **Object-model accelerometers (RRF ≥3.7.0-rc.2, `sensors.accelerometers[]`)** — RC2 moved
+  accelerometers out of `boards[].accelerometer` (`0ee0de8`, "Moved accelerometers from boards[] to
+  sensors.accelerometers[]"; a `boards[].accelerometer` no longer exists on that firmware, so a plugin
+  reading only it sees *no accelerometers at all*). Each entry has exactly `orientation`, `points`,
+  `port`, `resolution`, `runs`, `samplingRate` (`Accelerometer::objectModelTable` in
+  `Accelerometers.cpp`) — no board field, no `Q`. What follows from that:
+  - **The array index is the `P` slot, and `port` is the `C` value with its board prefix**, so the CAN
+    address is `parseCPrefix(port)` (no prefix = the mainboard, `boards[0].canAddress ?? 0`) — same
+    derivation as DWC's `useAccelerometer.ts`. `capture/tools.ts`'s `listAccelModelEntries` /
+    `findAccelModelEntry` are the one place either object-model shape is read; `mapAccelerometers`
+    puts `canAddress`/`slot`/`port` on the `AccelerometerRef` **only** for the sensors shape, and
+    **`ref.slot !== undefined` is what every other file tests for "this is rc.2"** — not a version
+    string. Don't reintroduce a version check for it: `3.7.0-rc.1+3` may or may not have the new model
+    (the move landed between `rc.1+3` and `rc.2`), while a model's shape can't be wrong.
+  - **`sensors.accelerometers` is merged with, not substituted for, `boards[].accelerometer`**: a board
+    the sensors array doesn't cover still falls back to its `boards[]` entry. A newer object-model
+    library (DWC's is `~3.7.0-rc.6`) may default `sensors.accelerometers` to `[]` in front of
+    older firmware, so treating "the array exists" as "use only it" would hide every accelerometer on
+    rc.1.
+  - **On rc.2 nothing is re-activated.** Every slot is independent, so a capture is `M956 P<slot>` and
+    `resolveActivationCode` returns no code, only the slot (`activationSlot` alone is enough for
+    `orchestrator.ts`'s `armParam`; `activationCode` without a slot stays P0, neither stays the legacy
+    board.driver id). Re-issuing `M955 C` would also drop `Q`, which the object model can't tell us.
+    The orientation registry, per-capture reactivation and the wiring-missing flag are all rc.1-only
+    machinery now; leave them, they still serve `3.7.0-rc.1`/`+1`.
+  - **`machineConfig.ts`'s `resolveAccelWiring`** is the one place a board's wiring is decided: the
+    object model's `port`+slot when it has them (both pins of an SPI value pass through verbatim; `Q`
+    is looked up in the files, best-effort, never required), else `findExistingWiring`. `planAccelSave`
+    then keeps a board's config.g slot if it has one, else the slot RRF is running it in when no other
+    board's config.g line claims that number, else the lowest free. `planAccelMigration` takes the same
+    running slots.
+  - **SPI toolboards — only the third-party expansion-firmware boards.** The Duet3Expansion fork carrying
+    the RP2040/RP2350 toolboards wires its accelerometer to SPI, and there `C` is **CS then INT**,
+    `<addr>.spi.cs.acc+int.acc` (RRF 3.7.0-rc.2 names the pins), while every board in Duet3D's own
+    Duet3Expansion source (TOOL1LC, TOOL1RR, TOOLINDX, EXP1HCL, F3PTB, NodeTrix, SAMMYC21, SZP) keeps
+    its I2C accelerometer and those pin names do not apply to it. `src/config/accelBoards.ts` is an
+    **allow-list** of the SPI boards by reported `boards[].shortName` (`BOARD_TYPE_NAME` in the fork's
+    `src/Config/*.h`, only ones with `SUPPORT_LIS3DH 1`): `SHT36V3`/`SHT36MAX3`/`SHT36MAX4`,
+    `SB2040MAX3`/`SB2040PROMAX3`, `FLY36RRF`, `FLYM2`, `FSSB2040V2` (the "SB2020v3"/"RRF36" shorthand
+    means `SB2040MAX3`/`SB2040PROMAX3` and `FLY36RRF`). Never turn it into "anything that isn't
+    I2C"; `test/accelBoards.test.ts` pins that no Duet3D-source board matches. The board prefix is on the
+    first pin only (RRF's `IoPort::AssignPorts` resolves each pin against its own board on the expansion
+    side, and the mainboard only strips the first prefix). A configured accelerometer's wiring is always
+    reused from `port`, never rebuilt; the list is used only for the empty-state hint
+    (`accelSetupHints`: for an SPI board on rc.2 with nothing configured, the exact `M955 P<lowest free
+    slot> C"<addr>.spi.cs.acc+int.acc"` line to add — I2C boards get no hint, since their port alias
+    isn't pinned down here). Boards with an SPI footprint but the driver compiled out
+    (FLYSB2040V1_0, MKSTHR3642v1_0, PITBV1_0/V2_0, STRIDEMAXV2_0, RP2350TEST) are deliberately absent.
+  - A failed run leaves its reason in the CSV where the trailer would be (RC2 adds "Received bad
+    data", "Received mismatched data", "Board restarted before the collection was complete");
+    `csv.ts` reports it.
+  - **Mixed-version machines**: see the mainboard-decides note under the single-accelerometer section —
+    on rc.2 the sensors model bypasses the version check entirely.
 - **Analysis core** (`src/analysis/`, pure TS, fully unit-tested, zero Vue/store deps): `fft.ts`,
   `spectrum.ts` (Welch PSD), `shapers.ts` (RRF's MZV/ZVD/ZVDD/ZVDDD/EI2/EI3 per `AxisShaper.cpp`),
   `recommend.ts` (the tuning engine — `findBestShaper` single-axis, `findBestShaperCombined`
@@ -271,7 +337,11 @@ first if only the 3.6 build breaks after adding a new shared module.
   `github:jaysuk/dwc-gcode-core#v0.2.0` — see `docs/gcode-core-plan.md` in duet-gcode-postprocessor),
   merged with duet-calibration-wizard's copy of the same file; this repo's own `gcodeEdit.ts` and its
   test are deleted, no Vue or host imports either way, exhaustively unit-tested upstream now instead
-  of here. `machineConfig.ts` is the thin host-injected
+  of here. The other modules in `src/config/` are pure and model-driven: `accelWiring.ts` (an `M955`
+  line's `C`/`Q`/slot), `accelScheme.ts` (legacy/single/multi from the mainboard's firmware),
+  `accelBoards.ts` (the SPI-accelerometer board allow-list and the empty-state setup hint),
+  `firmwareVersion.ts` (every feature's minimum-firmware constant), `motorTuneSupport.ts` and
+  `driverChip.ts` (the `motortune` gate, command choice and chip ID). `machineConfig.ts` is the thin host-injected
   layer that reads config.g/`tpost<N>.g`, builds a preview+diff, and on confirmation backs up the
   original file (`<path>.rlab-<timestamp>.bak`) before writing. Used to persist a measured
   accelerometer orientation or a recommended shaper past a reboot, which `M955`/`M593` sent at
@@ -319,8 +389,8 @@ first if only the 3.6 build breaks after adding a new shared module.
   whatever config.g set) whenever a different tool is mounted.
 - **A `Tool` has no accelerometer field in the object model.** `src/capture/tools.ts` derives the
   tool↔accelerometer mapping by hand: `tools[N].extruders[0]` → `move.extruders[i].driver.board` (a
-  `DriverId`, `.board` = CAN address) → the `boards[]` entry with that `canAddress` → its
-  `accelerometer`. Verified against `@duet3d/objectmodel`'s type declarations, not guessed. A board
+  `DriverId`, `.board` = CAN address) → the accelerometer on that board (from `sensors.accelerometers[]`
+  by its `port` prefix on RRF ≥3.7.0-rc.2, else the `boards[]` entry's `accelerometer`). Verified against `@duet3d/objectmodel`'s type declarations, not guessed. A board
   that doesn't resolve to any tool's first extruder (a plain mainboard-only machine, or a
   non-standard setup) falls back to labelling by board name alone — existing single-accelerometer
   users see no change.
@@ -414,9 +484,23 @@ first if only the 3.6 build breaks after adding a new shared module.
 
 - `npm test` needs no DWC checkout (kit-based mount tests). `DWC_DIR=<path> npm run typecheck` /
   `npm run verify-build` need a real DuetWebControl checkout
-  (`C:\Users\live\Documents\Github\DuetWebControl`, built against `v3.7-dev`). Both skip `src/ui36`
-  (via `dwcTypecheckIgnore` in `package.json`) because those sources only resolve against a 3.6 tree;
-  the 3.6 UI is type-checked/built by its own build instead (`build36.bat`, `fork-ts-checker`).
+  (`C:\Users\live\Documents\Github\DuetWebControl`, on its `v3.7-dev` branch — **keep it merged with
+  `Duet3D/v3.7-dev`**, the DWC Input Shaping plugin there is the reference this plugin tracks). Both skip
+  `src/ui36` (via `dwcTypecheckIgnore` in `package.json`) because those sources only resolve against a
+  3.6 tree; the 3.6 UI is type-checked/built by its own build instead (`build36.bat`, `fork-ts-checker`),
+  against a separate checkout at `C:\Users\live\Documents\Github\DuetWebControl-3.6` (`v3.6-dev`).
+  - **The 3.7 checkout needs this plugin's own dependencies installed in it, untracked**:
+    `npm install --no-save --no-package-lock dwc-gcode-core@^1.0.0 dwc-plugin-runtime@^0.8.7
+    chart.js@^4.5.1` after its `npm ci`. Without them `typecheck` reports `TS2307 Cannot find module
+    'dwc-gcode-core/...'` / `'dwc-plugin-runtime'` (plus a cascade of implicit-any errors) that are
+    environmental, not bugs — the kit stages the plugin inside DWC's tree and resolves from DWC's
+    `node_modules`. The 3.6 checkout needs only its own `npm ci` (the stage vendors the rest).
+  - **`build36.bat` can hang with no output** when run through `cmd.exe` from a non-interactive shell
+    (no node process, no stage dir). Running its two steps by hand works and is what the batch file does:
+    `node scripts/stage-dwc36.mjs "$TEMP/resonance-lab-dwc36"`, then, in the 3.6 checkout,
+    `npm run build-plugin-pkg -- "$TEMP/resonance-lab-dwc36"` (~2.5 min; the ZIP lands in that checkout's
+    `dist/`). The 3.6 builder also rewrites its own `src/plugins/imports.ts` — `git checkout` it afterwards
+    and delete `src/plugins/ResonanceLab`.
 - **`verify-build` has its own scoping wrapper, `scripts/verify-build.mjs`, mirroring
   `scripts/typecheck.mjs` — this is not optional.** The stock `dwc-plugin-verify-build` builds
   whichever `pluginDir` it's pointed at whole; before this wrapper existed, CI ran it unwrapped
@@ -479,6 +563,11 @@ first if only the 3.6 build breaks after adding a new shared module.
 
 ## Testing conventions
 
+- The RRF 3.7.0-rc.2 accelerometer work is covered by `accelerometerSensors.test.ts` (object-model
+  discovery, slots, arming by slot, two-pin SPI wiring, failed-run CSVs), `accelerometerSave.test.ts`
+  (`resolveAccelWiring` / `planAccelSave` / migration on the sensors model), `accelBoards.test.ts` (the SPI
+  allow-list — including that no Duet3D-source board matches — the setup hint and `accelScheme`) and
+  `motorTuneSupport.test.ts` (the tuning gate for every DWC-listed board, and free-phase vs sine-table).
 - Pure analysis/capture logic lives in `src/analysis/` and `src/capture/` and is unit-tested
   directly in `test/*.test.ts` — no DOM, no mocking, `MachineIO` is injected so orchestrator
   sequences are tested with a fake IO object.

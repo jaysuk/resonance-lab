@@ -24,7 +24,7 @@ export interface MachineIO {
 	download(path: string): Promise<string>;
 	/**
 	 * Current value of the firmware's completed-sampling-run counter for this accelerometer
-	 * (object model `boards[].accelerometer.runs`). Read just BEFORE arming the recorder; the
+	 * (object model `sensors.accelerometers[].runs`, or `boards[].accelerometer.runs` before RRF 3.7.0-rc.2). Read just BEFORE arming the recorder; the
 	 * firmware ticks it the instant it closes the CSV, which is the authoritative "done" signal.
 	 * Optional: when absent (e.g. unit tests), downloadCapture falls back to polling the file.
 	 */
@@ -68,14 +68,34 @@ export interface AccelerometerRef {
 	/** That tool's configured name (M563 P<n> S"<name>"), when it has one. */
 	toolName?: string;
 	/** True when this accelerometer's C/Q wiring wasn't found in config.g or its tool's tpost<N>.g -
-	 *  only meaningful on RRF >= 3.7.0-rc.1; always false/undefined on legacy firmware, where wiring
-	 *  was never needed to select it. Set by useResonanceLab.ts (needs async host I/O to check), never
-	 *  by mapAccelerometers itself, which stays a pure, synchronous, model-only derivation. */
+	 *  only meaningful on RRF >= 3.7.0-rc.1 before the object model carried `port`; always
+	 *  false/undefined on legacy firmware (wiring was never needed to select it) and on RRF >=
+	 *  3.7.0-rc.2 (`port` is the wiring). Set by useResonanceLab.ts (needs async host I/O to check),
+	 *  never by mapAccelerometers itself, which stays a pure, synchronous, model-only derivation. */
 	wiringMissing?: boolean;
+	/** CAN address of the board this accelerometer is connected to (0 = mainboard). Set together with
+	 *  `slot`/`port`, i.e. only when the object model is `sensors.accelerometers[]` (RRF >= 3.7.0-rc.2);
+	 *  elsewhere it's the numeric part of `id`. */
+	canAddress?: number;
+	/** The M955/M956 `P` slot this accelerometer occupies (its index in `sensors.accelerometers[]`).
+	 *  Present only on RRF >= 3.7.0-rc.2, where it is authoritative - and where it means the
+	 *  accelerometer is always armed as `M956 P<slot>` with nothing to re-activate first, since every
+	 *  slot is independent. */
+	slot?: number;
+	/** The M955 `C` value this slot is configured with, board prefix included (e.g. "121.i2c.lis", or
+	 *  "121.spi.cs.acc+int.acc" - CS then INT - for an SPI-connected STM32 toolboard). Present only
+	 *  alongside `slot`. */
+	port?: string;
+}
+
+/** CAN address of the board carrying `accel` (0 = mainboard). */
+export function accelCanAddress(accel: AccelerometerRef): number {
+	return accel.canAddress ?? (parseInt(accel.id, 10) || 0);
 }
 
 /**
- * Discover configured accelerometers from the object model (M955 creates boards[].accelerometer),
+ * Discover configured accelerometers from the object model (M955 creates a sensors.accelerometers[] entry
+ * on RRF >= 3.7.0-rc.2, a boards[].accelerometer before that),
  * labelled by tool on a tool-changer. Delegates to ./tools.ts, which is worth reading before editing
  * this - the tool/board association isn't in the object model directly and has to be derived.
  */
@@ -118,6 +138,14 @@ async function sendChecked(io: MachineIO, code: string): Promise<void> {
 	if (/^Error:/im.test(reply)) {
 		throw new Error(reply.trim());
 	}
+}
+
+/** The `P<n> ` token that arms M956 for `options.accelerometer` - see SweepCaptureOptions.activationSlot. */
+function armParam(options: { accelerometer: AccelerometerRef; activationCode?: string; activationSlot?: number }): string {
+	if (options.activationSlot !== undefined) {
+		return `P${options.activationSlot} `;
+	}
+	return options.activationCode ? "P0 " : `P${options.accelerometer.id} `;
 }
 
 /**
@@ -183,9 +211,11 @@ export interface SweepCaptureOptions extends SweepOptions {
 	 *  inaccurate "zero or omitted" description), and `GetLimitedUIValue('P', ActualMaxAccelerometers)`
 	 *  caps it to 0 - the old board.driver-shaped id is never a valid M956 P value under this scheme. */
 	activationCode?: string;
-	/** The slot number (M955/M956's P value) `activationCode` targets - 0 on single-slot firmware
-	 *  (see AccelWiring.slot), the board's own discovered slot (0-9) on multi-accelerometer firmware.
-	 *  Only meaningful when `activationCode` is set; ignored otherwise. */
+	/** The slot number (M956's P value) to arm - 0 on single-slot firmware (see AccelWiring.slot), the
+	 *  board's own slot (0-9) on multi-accelerometer firmware. Independent of `activationCode`: RRF >=
+	 *  3.7.0-rc.2 reports every accelerometer's slot in the object model, so it is armed by slot with
+	 *  no activation line at all. With an `activationCode` but no slot, P0 (the only legal value on
+	 *  single-slot firmware); with neither, the legacy board.driver id. */
 	activationSlot?: number;
 }
 
@@ -237,7 +267,7 @@ export async function runSweepCapture(io: MachineIO, options: SweepCaptureOption
 	// snapshot the run counter first (AFTER activating - see activateAndSnapshotRuns) and let
 	// downloadCapture wait for it to tick.
 	const runsBefore = await activateAndSnapshotRuns(io, options);
-	const pParam = options.activationCode ? `P${options.activationSlot ?? 0} ` : `P${options.accelerometer.id} `;
+	const pParam = armParam(options);
 	await sendChecked(io, `M400 M956 ${pParam}S${samples} A0 F"${name}" M98 P"${progPath}"`);
 	return { csvPath, program, accelId: options.accelerometer.id, runsBefore, progPath };
 }
@@ -314,7 +344,7 @@ export async function runBeltCapture(io: MachineIO, options: BeltCaptureOptions)
 	// Activate ONCE, above the sized/self-sizing branch below - both paths arm the SAME accelerometer,
 	// so there's no need (and no correctness reason) to resend the activation line twice.
 	const runsBefore = await activateAndSnapshotRuns(io, options);
-	const pParam = options.activationCode ? `P${options.activationSlot ?? 0} ` : `P${options.accelerometer.id} `;
+	const pParam = armParam(options);
 
 	if (options.samples !== undefined) {
 		await sendChecked(io, `M400 M956 ${pParam}S${options.samples} A0 F"${name}" M98 P"${progPath}"`);
@@ -397,7 +427,7 @@ export async function runNativeCapture(io: MachineIO, options: NativeCaptureOpti
 	// execute the profile in one line so recording brackets it.
 	await sendChecked(io, `G1 ${axis}${options.center - span} F${feedrate} M400`);
 	const runsBefore = await activateAndSnapshotRuns(io, options);
-	const pParam = options.activationCode ? `P${options.activationSlot ?? 0} ` : `P${options.accelerometer.id} `;
+	const pParam = armParam(options);
 	await sendChecked(io, `M956 ${pParam}S${samples} A0 F"${name}" G4 P300 ${moves.join(" ")} M400`);
 	return {
 		csvPath,
@@ -494,7 +524,7 @@ export async function runFixedExcitation(io: MachineIO, options: SweepCaptureOpt
 	const rate = options.expectedSampleRate ?? 1000;
 	const samples = Math.min(200000, Math.ceil((program.durationSec + 2) * rate));
 	const runsBefore = await activateAndSnapshotRuns(io, options);
-	const pParam = options.activationCode ? `P${options.activationSlot ?? 0} ` : `P${options.accelerometer.id} `;
+	const pParam = armParam(options);
 	await sendChecked(io, `M400 M956 ${pParam}S${samples} A0 F"${name}" M98 P"${progPath}"`);
 	return { csvPath, program, accelId: options.accelerometer.id, runsBefore, progPath };
 }
@@ -529,7 +559,7 @@ export async function runSpeedPointCapture(io: MachineIO, options: SpeedPointCap
 	const samples = Math.min(200000, Math.ceil(((4 * span) / options.speed) * rate * 1.3));
 	await sendChecked(io, `G1 ${axis}${options.center - span} F30000 M400`);
 	const runsBefore = await activateAndSnapshotRuns(io, options);
-	const pParam = options.activationCode ? `P${options.activationSlot ?? 0} ` : `P${options.accelerometer.id} `;
+	const pParam = armParam(options);
 	await sendChecked(io,
 		`M956 ${pParam}S${samples} A0 F"${name}" `
 		+ `G1 ${axis}${options.center + span} F${f} G1 ${axis}${options.center - span} F${f} M400`,
@@ -583,7 +613,7 @@ export async function runMotorPointCapture(io: MachineIO, options: MotorPointCap
 		? `G1 ${axisWords(m, m.end)} F${m.feedrate} G1 ${axisWords(m, m.start)} F${m.feedrate} M400`
 		: `G1 ${axisWords(m, m.end)} F${m.feedrate} M400`;
 	const runsBefore = await activateAndSnapshotRuns(io, options);
-	const pParam = options.activationCode ? `P${options.activationSlot ?? 0} ` : `P${options.accelerometer.id} `;
+	const pParam = armParam(options);
 	await sendChecked(io, `M956 ${pParam}S${samples} A0 F"${name}" ${moves}`);
 
 	return {

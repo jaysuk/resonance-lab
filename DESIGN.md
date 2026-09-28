@@ -41,7 +41,12 @@ ecosystems or their tools are referenced in code, comments, or documentation.
    driver capability beyond `M955`/`M956` — unlike mode 8 below, it works on any RRF version.
 8. **Motor waveform tuning** — a least-squares search (see `motorTuning.ts` below) for the
    current-waveform correction that minimises vibration at one harmonic of a motor's electrical
-   cycle, then writes it with `M970.3` (phase stepping) or `M569.2` (the driver's sine table).
+   cycle, then writes it with `M970.3` (free phase, harmonics 2 and 4 — for a driver that commutates
+   in software: an axis in phase stepping, or a driver in closed / assisted-open loop, i.e. `direct`
+   mode, as DuetWebControl's own Input Shaping plugin does) or `M569.2` (the driver's sine table,
+   harmonic 4 only). There is deliberately no board list: the 1HCL (`EXP1HCL`), `M23CL` and INDX
+   (`TOOLINDX`) toolboards pass on firmware version, command choice and a runtime probe like any other
+   board (see `motorTuneSupport.ts`).
    Gated on RepRapFirmware **3.7.0-rc.1+** (fails closed on anything older or unparseable, per
    `firmwareVersion.ts`) — the command may simply not exist below that version. The driver chip
    itself (needed to know whether it supports a waveform correction at all) is identified by
@@ -84,6 +89,11 @@ scope-choice mechanism the shaper (`M593`) save already has, but with independen
 `M593` "all tools" default coexists peacefully with any per-tool override, where an `M955` "all tools"
 save is the *only* thing keeping any other accelerometer active at all.
 
+**Which scheme applies is decided by the mainboard's firmware alone** (`accelScheme.ts`), not by the version
+of the board an accelerometer is on: `M955`/`M956` are validated and slotted on the mainboard, and a remote
+board only receives the forwarded parameters. On a mixed-version machine an updated mainboard therefore
+rejects a legacy `P<board.driver>` line whatever its toolboard runs.
+
 ## Multi-accelerometer support (RRF ≥3.7.0-rc.1+1)
 
 A later RepRapFirmware revision (reported version string `3.7.0-rc.1+1`) raises the accelerometer limit
@@ -93,7 +103,7 @@ single board still gets only one slot — RRF itself rejects reusing a board acr
 above this section still applies verbatim to firmware between `3.7.0-rc.1` and this version; this
 section only covers what changes once a board is on `3.7.0-rc.1+1` or later.
 
-- **The slot number is invisible to the object model, same as the wiring string above** — it exists
+- **The slot number is invisible to the object model here (until rc.2, next section), same as the wiring string above** — it exists
   only as the `P` value in that board's own `M955` line in config.g/`tpost<N>.g`. The plugin discovers
   it the same way it discovers wiring: by reading the line back, never by inventing or caching a number
   independently of what's actually on disk.
@@ -108,6 +118,43 @@ section only covers what changes once a board is on `3.7.0-rc.1+1` or later.
   error. The plugin detects stray tpost lines like this on a tool-changer once any board is running the
   new firmware, and offers a one-time consolidation: strike the lines out of their tpost files and add
   each board into config.g with its own slot instead, carrying over each line's last-set orientation.
+
+## Object-model accelerometers (RRF ≥3.7.0-rc.2)
+
+RepRapFirmware 3.7.0-rc.2 moved accelerometers out of `boards[].accelerometer` into
+`sensors.accelerometers[]`, and that makes most of the two sections above unnecessary on this firmware:
+
+- **The array index *is* the slot** — the `P` in `M955`/`M956`. An unconfigured slot below a configured
+  one is `null`, so the plugin reads the index, never a count.
+- **`port` is the wiring** — the `M955` `C` value exactly as configured, board prefix included. The CAN
+  address is therefore the leading `<n>.` of `port` (no prefix = the mainboard), the same way DWC's own
+  plugin derives it. Nothing is recovered from config.g's text any more, so an accelerometer configured
+  by a macro, at runtime, or with `{...}` expression syntax is listed and usable like any other. `Q`
+  (the SPI clock) is the one thing the object model still doesn't carry; it's looked up in the files
+  on a best-effort basis, only when a line is rebuilt.
+- **Measurements arm by slot alone** — `M956 P<slot>`, with no `M955` in front. Every slot is
+  independent, so there is nothing to re-activate; re-issuing `M955 C` would only reset the accelerometer
+  and silently drop a custom `Q`. Orientation, resolution, rate and the run counter are all read live
+  from the same entry.
+- **Two-pin SPI wiring, on the third-party expansion boards only.** The Duet3Expansion fork's RP2040/RP2350
+  toolboards (SHT36V3/MAX3/MAX4, SB2040MAX3/PROMAX3, FLY36RRF, FLYM2, FSSB2040V2 — `accelBoards.ts`)
+  connect their accelerometer over SPI, so their `C` value names **CS then INT**, in that order —
+  `M955 P<slot> C"<addr>.spi.cs.acc+int.acc"`. Every board in Duet3D's own source (TOOL1LC, TOOL1RR,
+  TOOLINDX, EXP1HCL, …) keeps I2C and these names don't apply to it. The prefix belongs on the first pin
+  only; a configured accelerometer's value is taken as reported and never reconstructed, so both pins
+  survive an orientation change or a save untouched. For an SPI board with nothing configured, the
+  empty state shows the exact line to add. (The firmware refuses a lone SPI pin: "SPI-connected
+  accelerometer requires CS and IRQ pins".)
+- **Saving** keeps the slot RRF is already running a board in (unless config.g gives that number to a
+  different board, then the lowest free one), and migrating stray `tpost<N>.g` lines does the same.
+- **A run that fails says why**: the firmware writes the reason into the CSV in place of the
+  rate/overflows trailer ("Received mismatched data", "Board restarted before the collection was
+  complete", …) and the parser reports it instead of a vague truncation.
+
+Detection is by the *shape of the model*, not the version string: a `sensors.accelerometers` array
+switches a board to this path, and a `boards[].accelerometer` is only consulted for a board the array
+doesn't already cover, so firmware between `3.7.0-rc.1` and rc.2 (which shares neither version string
+nor object model with it) keeps working unchanged.
 
 ## Analysis core (`src/analysis/`, pure TS, no Vue, fully unit-tested)
 
@@ -163,13 +210,16 @@ section only covers what changes once a board is on `3.7.0-rc.1+1` or later.
   per harmonic with a free phase (`M970.3`), 6 with phase constrained to 0/180 (`M569.2`'s sine
   table, which can't represent anything else).
 
-Two small pure modules in `src/config/` support the tuning gate, independent of the config-editing
-modules described under "Config persistence" in `CLAUDE.md`: `firmwareVersion.ts` (semver-ish
-comparison that strips the STM32 port's parenthesised version suffix, e.g. `3.7.0-rc.1(CAN0)`,
-before parsing - skipping that step would fail the gate closed on exactly the boards phase stepping
-targets) and `driverChip.ts` (identifies a TMC chip from its IOIN register's VERSION byte, read over
-`M569.2 R<addr>` - the same method as the sibling `duet-tmc-tuner` plugin, since the object model has
-no chip-type field at all).
+Three small pure modules in `src/config/` support the tuning gate, independent of the config-editing
+modules described under "Config persistence" in `CLAUDE.md`: `firmwareVersion.ts` (the minimum-firmware
+constants; the semver-ish comparison itself lives in `dwc-gcode-core/firmware` and strips the STM32
+port's parenthesised version suffix, e.g. `3.7.0-rc.1(CAN0)`, before parsing - skipping that step would
+fail the gate closed on exactly the boards phase stepping targets), `motorTuneSupport.ts` (the gate over
+the mainboard's and the driver board's firmware, and the command choice: free-phase `M970.3` for an axis in
+phase stepping or a driver in `direct` mode, else the `M569.2` sine table - with no board list, so the 1HCL,
+M23CL and INDX toolboards need no entry) and `driverChip.ts` (identifies a TMC chip from its IOIN
+register's VERSION byte, read over `M569.2 R<addr>` - the same method as the sibling `duet-tmc-tuner`
+plugin, since the object model has no chip-type field at all).
 
 Capture I/O lives in `src/capture/`: `csv.ts` (RRF accelerometer CSV parser, incl. overflow flags,
 and `cropCaptureToDuration` for oversized/self-timed recordings), `sweep.ts` (swept-excitation

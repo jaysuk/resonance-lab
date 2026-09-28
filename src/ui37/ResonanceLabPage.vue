@@ -292,6 +292,10 @@
 				</v-alert>
 				<v-alert v-else-if="accelItems.length === 0" type="warning" variant="tonal" density="compact" class="mb-3">
 					{{ $t("plugins.resonanceLab.accelMissing") }}
+					<div v-for="hint in accelSetupHints" :key="hint.canAddress" class="mt-1">
+						{{ $t("plugins.resonanceLab.accelSetupHint", { board: hint.board, address: hint.canAddress }) }}
+						<code class="ml-1">{{ hint.line }}</code>
+					</div>
 				</v-alert>
 				<v-alert v-else-if="error" type="error" variant="tonal" density="compact" class="mb-3" closable @click:close="error = ''">
 					{{ error }}
@@ -752,6 +756,7 @@ const {
 	accelItems,
 	accelItemsForPicker,
 	selectedAccelWiringMissing,
+	accelSetupHints,
 	selectedAccel,
 	axisItems,
 	motorItems,
