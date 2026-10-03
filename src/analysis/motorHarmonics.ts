@@ -23,6 +23,11 @@ export interface MotorHarmonics {
 	 * signal rather than the accelerometer's own noise and broadband machine vibration.
 	 */
 	noiseFloor?: Float64Array;
+	/**
+	 * True when the fundamental search ended on the edge of its window - the real frequency may lie outside
+	 * it (a narrow `searchRange` assumes the nominal frequency is nearly right), so the caller can widen it.
+	 */
+	lockedAtEdge?: boolean;
 }
 
 export interface MotorSweep {
@@ -101,10 +106,17 @@ function largestPowerOfTwoAtMost(n: number): number {
  *   `numHarmonics`, which alone drives the fundamental search. Defaults to `numHarmonics`. Raising
  *   `numHarmonics` instead would change where the fundamental is located, and with it every
  *   amplitude - so reaching orders above 1 must go through this parameter.
+ * @param readTolerance Relative half-width (fraction of each frequency) of the band an order's amplitude is
+ *   read over. 0 reads exactly at `order * fundamental`. A motor harmonic is a spectral line a fraction of
+ *   a hertz wide, and the fundamental it is measured from is only as good as the lock on a weak order-1
+ *   line (field data: it wandered by ~1 Hz between back-to-back captures, which put order 0.5 half a hertz
+ *   off its line and read a 0.39 g peak as 0.09 g). With a tolerance, each order - and each background
+ *   gap, the same estimator - takes the strongest line in its band, and `frequencies` reports where.
  */
 export function analyzeMotorHarmonics(
 	channels: Array<ArrayLike<number>>, sampleRate: number, nominalHz: number,
 	numHarmonics = 8, searchRange = 0.05, subdivisions = 4, evaluateHarmonics = numHarmonics,
+	readTolerance = 0,
 ): MotorHarmonics {
 	if (channels.length < 1 || channels[0].length < 16) {
 		throw new Error("Too few samples for harmonic analysis");
@@ -181,12 +193,53 @@ export function analyzeMotorHarmonics(
 		}
 	}
 
+	// The strongest line, summed across channels, within `readTolerance` of `centre` (Hz). The coarse FFT bins
+	// find it, a direct DFT scan at 1/8 bin around the winning bin places it - the same two steps the
+	// fundamental search uses. With no tolerance it is simply `centre`.
+	const peakNear = (centre: number): number => {
+		if (readTolerance <= 0) {
+			return centre;
+		}
+		const lo = Math.max(binWidth, centre * (1 - readTolerance));
+		const hi = Math.min(sampleRate / 2, centre * (1 + readTolerance));
+		if (!(hi > lo)) {
+			return centre;
+		}
+		const lastBin = spectra[0].length - 1;
+		let peakBin = Math.min(lastBin, Math.max(1, Math.round(centre / binWidth)));
+		let peakPower = -1;
+		for (let bin = Math.max(1, Math.floor(lo / binWidth)); bin <= Math.min(lastBin, Math.ceil(hi / binWidth)); bin++) {
+			let power = 0;
+			for (const spectrum of spectra) {
+				power += spectrum[bin];
+			}
+			if (power > peakPower) {
+				peakPower = power;
+				peakBin = bin;
+			}
+		}
+		let best = Math.min(hi, Math.max(lo, peakBin * binWidth));
+		let bestEnergy = -1;
+		for (let f = Math.max(lo, (peakBin - 1) * binWidth); f <= Math.min(hi, (peakBin + 1) * binWidth) + 1e-9; f += binWidth / 8) {
+			let energy = 0;
+			for (const ch of windowed) {
+				energy += dftEnergy(ch, f / sampleRate);
+			}
+			if (energy > bestEnergy) {
+				best = f;
+				bestEnergy = energy;
+			}
+		}
+		return best;
+	};
+	const amplitudeAt = (ch: ArrayLike<number>, f: number): number => (2 * Math.sqrt(dftEnergy(ch, f / sampleRate))) / windowSum;
+
 	const orders = Array.from({ length: numOrders }, (_, k) => (k + 1) / subdivisions);
-	const frequencies = orders.map((order) => order * fundamental);
+	const frequencies = orders.map((order) => peakNear(order * fundamental));
 	const amplitudes = windowed.map((ch) => {
 		const out = new Float64Array(frequencies.length);
 		for (let i = 0; i < frequencies.length; i++) {
-			out[i] = (2 * Math.sqrt(dftEnergy(ch, frequencies[i] / sampleRate))) / windowSum;
+			out[i] = amplitudeAt(ch, frequencies[i]);
 		}
 		return out;
 	});
@@ -194,15 +247,15 @@ export function analyzeMotorHarmonics(
 	// Background level from the gaps between orders - same estimator as the amplitudes above, so the two
 	// are directly comparable. Gaps past Nyquist are skipped.
 	const noiseFloor = new Float64Array(windowed.length);
-	const gaps = orders.map((order) => (order - 0.5 / subdivisions) * fundamental).filter((f) => f > 0 && f < sampleRate / 2);
+	const gaps = orders.map((order) => (order - 0.5 / subdivisions) * fundamental).filter((f) => f > 0 && f < sampleRate / 2).map(peakNear);
 	if (gaps.length > 0) {
 		windowed.forEach((ch, c) => {
-			const levels = gaps.map((f) => (2 * Math.sqrt(dftEnergy(ch, f / sampleRate))) / windowSum).sort((a, b) => a - b);
+			const levels = gaps.map((f) => amplitudeAt(ch, f)).sort((a, b) => a - b);
 			noiseFloor[c] = levels[Math.floor(levels.length / 2)];
 		});
 	}
 
-	return { fundamental, orders, frequencies, amplitudes, noiseFloor };
+	return { fundamental, orders, frequencies, amplitudes, noiseFloor, lockedAtEdge: bestBin <= minBin || bestBin >= maxBin };
 }
 
 /** Combine per-channel amplitudes into one magnitude per order (root sum of squares across channels). */

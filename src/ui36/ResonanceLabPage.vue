@@ -436,6 +436,9 @@
 					</div>
 				</v-alert>
 
+				<template v-if="method === 'motortune' && !running">
+					<v-alert v-for="(note, i) in tuneLockNotes" :key="`lock${i}`" type="warning" text dense class="mb-3">{{ note }}</v-alert>
+				</template>
 				<!-- Loading a saved capture: prominent, replaces whatever was on screen (already cleared) -->
 				<div v-if="loadingCapture" class="flex-grow-1 d-flex flex-column align-center justify-center text--secondary">
 					<v-progress-circular indeterminate size="56" width="4" color="primary" class="mb-4" />
@@ -623,6 +626,9 @@
 						<v-btn color="primary" @click="keepMotorTune">
 							<v-icon left>mdi-content-save-check-outline</v-icon>{{ $t("plugins.resonanceLab.motorTune.keep") }}
 						</v-btn>
+						<v-btn outlined :loading="configDialogBusy" :disabled="!isConnected || running || motorTuneResult.codes.length === 0" @click="saveMotorTuneToConfig">
+							<v-icon left>mdi-file-document-edit-outline</v-icon>{{ $t("plugins.resonanceLab.motorTune.saveToConfig") }}
+						</v-btn>
 						<v-btn text @click="discardMotorTune">
 							<v-icon left>mdi-undo</v-icon>{{ $t("plugins.resonanceLab.motorTune.discard") }}
 						</v-btn>
@@ -631,6 +637,9 @@
 							<v-icon left>mdi-check-decagram-outline</v-icon>{{ $t("plugins.resonanceLab.motorTune.checkButton") }}
 						</v-btn>
 						<HelpTip :text="$t('plugins.resonanceLab.motorTune.checkHint')" />
+						<v-btn text :disabled="tuneLogCount === 0 || running" @click="exportTuneDiagnostics">
+							<v-icon left>mdi-download</v-icon>{{ $t("plugins.resonanceLab.motorTune.diagnostics.button", { n: tuneLogCount }) }}
+						</v-btn>
 					</div>
 				</template>
 
@@ -864,7 +873,10 @@ const {
 	detectedChip,
 	detectingChip,
 	tuneStatus,
+	tuneLockNotes,
 	tuneCheckRows,
+	tuneLogCount,
+	exportTuneDiagnostics,
 	tuneCheckVerdict,
 	canVerifyMotorTune,
 	verifyMotorTune,
@@ -917,6 +929,7 @@ const {
 	configCode,
 	configFileName,
 	saveOrientationToConfig,
+	saveMotorTuneToConfig,
 	saveShaperFit,
 	saveShaper,
 	cancelShaperScope,

@@ -24,7 +24,7 @@ download the ZIP and install it via **Settings → General → Plugins → Insta
   correction (`M970.3`/`M569.2`) to reduce detent-torque and coil-imbalance vibration at the source —
   on phase-stepping and closed-loop drivers alike, including CAN toolboards such as the 1HCL, M23CL
   and INDX. Phase-stepping drivers can tune any of harmonics 1, 2, 3, 4, 6 and 8 (up to four at once,
-  with an optional survey that skips the quiet ones and a final check that they didn't disturb each other).
+  with a survey (five captures, ranking orders by how repeatable they are) that skips the quiet and the scattering ones and a final check that they didn't disturb each other).
 - **Verify** — re-measure with the shaper applied and confirm the ringing is gone before saving.
 
 Generated test G-code is uploaded to its own folder (`0:/sys/resonanceLab` by default, configurable

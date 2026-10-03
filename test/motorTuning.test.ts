@@ -46,12 +46,12 @@ describe("tuneHarmonic", () => {
 	it("uses exactly the documented move budget", async () => {
 		const { measure: freeMeasure, calls: freeCalls } = makeMeasure([{ mag: 1, phaseDeg: 10 }]);
 		await tuneHarmonic(4, freeMeasure, false);
-		expect(freeCalls.length).toBe(10);
+		expect(freeCalls.length).toBe(11);
 		expect(freeCalls.length).toBe(getMovesPerHarmonic(false));
 
 		const { measure: constrMeasure, calls: constrCalls } = makeMeasure([{ mag: 1, phaseDeg: 0 }]);
 		await tuneHarmonic(4, constrMeasure, true);
-		expect(constrCalls.length).toBe(6);
+		expect(constrCalls.length).toBe(7);
 		expect(constrCalls.length).toBe(getMovesPerHarmonic(true));
 	});
 
@@ -71,6 +71,30 @@ describe("tuneHarmonic", () => {
 		const result = await tuneHarmonic(4, noisyMeasure, false);
 		expect(result.best.magnitude).toBe(0);
 		expect(result.best.amplitude).toBe(result.baseline);
+	});
+
+	it("captures the uncorrected motor twice and reports the gap between them as its scatter", async () => {
+		const { measure, calls } = makeMeasure([{ mag: 2, phaseDeg: 40 }]);
+		const result = await tuneHarmonic(4, measure, false);
+		expect(calls.slice(0, 2)).toEqual([{ magnitude: 0, phase: 0 }, { magnitude: 0, phase: 0 }]);
+		expect(result.baselineSpread).toBe(0);
+		expect(result.withinScatter).toBe(false);
+	});
+
+	it("refuses a win that is smaller than the baseline scatter", async () => {
+		// Baselines read 1.0 then 0.4 (a weak order scattering): every corrected capture reads 0.6, an apparent 14%
+		// gain on the 0.7 mean, but well inside the 0.6 gap between the two baselines.
+		let uncorrected = 0;
+		async function scattering(magnitude: number, phase: number): Promise<TuningMeasurement> {
+			const amplitude = uncorrected < 2 ? [1.0, 0.4][uncorrected++] : 0.6;
+			return { harmonic: 0, magnitude, phase, amplitude, amplitudes: [amplitude, amplitude] };
+		}
+		const result = await tuneHarmonic(1, scattering, false);
+		expect(result.baseline).toBeCloseTo(0.7);
+		expect(result.baselineSpread).toBeCloseTo(0.6);
+		expect(result.best.magnitude).toBe(0);
+		expect(result.best.amplitude).toBe(result.baseline);
+		expect(result.withinScatter).toBe(true);
 	});
 
 	it("does not throw or produce NaN on an all-zero response", async () => {

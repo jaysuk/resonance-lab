@@ -166,7 +166,7 @@ first if only the 3.6 build breaks after adding a new shared module.
       every planned harmonic to read the uncorrected motor, then immediately restores the quiet ones.
       The survey skips quiet harmonics rather than asking the user mid-run (no interactive pause in the
       run loop). "Quiet" is relative to the test speed — the machine's response depends on absolute
-      frequency — and is worded that way. **Quiet = amplitude under `SURVEY_MIN_SNR` (3×) the background
+      frequency — and is worded that way. **Quiet = amplitude under `SURVEY_MIN_SNR` (2× — it was 3× before the tune path read a band maximum, which raised the background figure ~2.7×) the background
       level, not a displacement cut-off**: displacement falls with frequency², so a µm threshold would skip
       S6/S8 however clean their signal. The background is `MotorHarmonics.noiseFloor` (median amplitude
       midway between adjacent orders); the displacement threshold survives only as a fallback when an
@@ -195,7 +195,54 @@ first if only the 3.6 build breaks after adding a new shared module.
     - A final capture with every correction in place re-measures the orders a correction was adopted for;
       `verifyRegressed` flags one that rose >25% above what its own search measured
       (`VERIFY_REGRESSION_RATIO`, a heuristic) **and** by at least 10% of its untuned baseline, so scatter
-      on a harmonic tuned down to the noise floor isn't reported as a regression.
+      on a harmonic tuned down to the noise floor isn't reported as a regression. **A regressed harmonic is
+      dropped, not just flagged**: it goes back to what the driver held before the run, its `results` entry
+      is reverted to "no correction" (so the headline count, config.g lines and "Verify corrections" all
+      exclude it), and `verification[].searched` is the only place its search figure survives.
+    - **Weak orders scatter by multiples between captures** (field data: S1's uncorrected reading was 0.0189
+      in one session and 0.0063 in the next; S4's 0.0137 → 0.0061). `tuneHarmonic` therefore captures the
+      uncorrected motor **twice**, uses their mean as the baseline, and adopts a correction only if it beats
+      that mean by more than the gap between the two (`baselineSpread`; `withinScatter` marks a near-miss so
+      the result says so). Costs one more move per harmonic (`getMovesPerHarmonic` 11 / 7). Two back-to-back
+      baselines catch random scatter only — a reading that shifts with some slowly-varying state would pass.
+    - **The survey is `SURVEY_REPEATS` (5) captures, ranked on repeatability, not signal alone**
+      (`surveyRepeated`; `surveyHarmonics` is the one-capture case). A row carries `stdev`/`stability`
+      (mean ÷ stdev across captures) and `stable` (≥ `SURVEY_MIN_STABILITY`, 5 — a judgement call, calibrate it
+      from exported diagnostics); `pickTopHarmonics` takes only clear-and-stable orders, and a clear-but-scattering
+      one gets the `unstable` chip reason / table result. The reason it exists: S2 read 0.28 g (25× any other
+      order) yet two back-to-back uncorrected captures differed by 60%, so the old "strongest first" survey
+      chose the least tunable order. Single-capture surveys judge nothing (`stable: true`).
+    - **Diagnostics log** (`src/analysis/tuneDiagnostics.ts`; `beginDiagRun`/`endDiagRun`/`exportTuneDiagnostics`
+      in the composable): every survey/tune/verify capture is kept in memory (max 20 runs, a plain array — only
+      its count is reactive) with both legs' per-order amplitudes, noise floor, the fundamental the analysis
+      located, the sampling rate it ran at, and `applied` — the corrections live on the driver at that moment
+      (tracked by `liveCorrections`, updated by every `setCorrection`). The "Export diagnostics" button saves it
+      as JSON; nothing is uploaded and it is gone on reload. A new capture path must pass a `DiagLabel` through
+      `captureMotorLegs` or it won't appear in the file.
+    - **The fundamental lock is not trustworthy on its own** (`src/analysis/fundamentalLock.ts`). With only order 1
+      under Nyquist (1380 Hz sampling, 400 Hz full-step) the lock rests on one weak line and wandered ~1 Hz between
+      back-to-back captures (field data, 2026-10-03: 399.3 / 400.2 / 401.2 Hz, once 393.5). S2 is a line well under
+      0.4 Hz wide at 0.39 g, so a 0.9 Hz lock error read it at 0.09 g — which looked exactly like a successful
+      correction (the "adopted" S2 result was measured entirely on mislocked captures) and, in an uncorrected baseline,
+      hid a real ~30% S1 win. Four defences, all tune-path only (`motor` keeps the plain point read):
+      `analyzeTuneLeg` searches ±0.5% around nominal (`LOCK_SEARCH_RANGE`) and repeats in ±5% only if the lock ends on
+      the window's edge (`lockedAtEdge` — a sampling clock off by more than 0.5%); `analyzeMotorHarmonics`'s
+      `readTolerance` (`READ_TOLERANCE` 0.4%) reads each order and each background gap as the strongest line in a band
+      and reports where in `frequencies` (so `frequencies[i]` is no longer exactly `order × fundamental` there);
+      `LockTracker` flags a capture whose per-leg lock is >0.15% from the median of the run's earlier ones and
+      `captureMotorLegs` retakes it (max `MAX_LOCK_RETAKES`, every take logged with `attempt`/`rejected`, rejected ones
+      excluded from `scatter`); and `tuneLockNotes` shows a warning when retakes ran out or a leg's median sits >0.3%
+      from the commanded frequency. Legs are compared with their *own* history: leg 1 healthily locks ~0.2% above leg 0
+      on this machine. Pass the run's tracker to every `captureMotorLegs`, or its captures aren't checked.
+      **Once a leg has `MIN_HINT_OBSERVATIONS` (3) locks on record, its median is a hint** and `analyzeTuneLeg` searches
+      only ±0.1% around it, never widening: tuning S4 *is* removing the order-1 line the search locks onto (second
+      field capture, 620 Hz: order 1 fell 0.0135 → 0.0045 g under correction, then one leg's lock jumped to 632.5 /
+      604.8 Hz, ±2-3%, and every reading in that capture — S1, S2, S4 — halved; those captures corrupted the next
+      harmonic's baseline). A survey's per-leg locks seed the tune's tracker (`TuneSurvey.lockLegs`, only while its key
+      is still valid) and a tune's seed the verify (`MotorTuneResult.lockLegs`), so the reference exists from capture 1.
+    - **The tune path's positioning moves (`sendMove`) are quiet and error-checked**, like `sendChecked`: a
+      non-quiet `G1 ... M400` picked up a stale reply and popped up "Driver 6 waveform correction: ..." under
+      its own title. Don't send a non-quiet code anywhere in a tune/verify run.
     - **3.6 has no phase stepping**, so `ui36/` deliberately omits the harmonic chips/survey toggle (the
       composable's `tuneSelected`/`tuneSurvey` stay shared and default to S2+S4; only `ui37/` binds them).
       Don't add them back to the Vuetify 2 template.

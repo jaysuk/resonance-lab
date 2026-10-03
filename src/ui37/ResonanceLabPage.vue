@@ -384,6 +384,10 @@
 								{{ $t("plugins.resonanceLab.motorTune.surveyButton") }}
 							</v-btn>
 							<HelpTip :text="$t('plugins.resonanceLab.motorTune.surveyHint')" />
+							<v-btn size="small" variant="text" prepend-icon="mdi-download" :disabled="tuneLogCount === 0 || running" @click="exportTuneDiagnostics">
+								{{ $t("plugins.resonanceLab.motorTune.diagnostics.button", { n: tuneLogCount }) }}
+							</v-btn>
+							<HelpTip :text="$t('plugins.resonanceLab.motorTune.diagnostics.hint')" />
 							<v-spacer />
 							<v-checkbox v-model="tuneManual" density="compact" hide-details :disabled="running" :label="$t('plugins.resonanceLab.motorTune.manualLabel')" />
 							<HelpTip :text="$t('plugins.resonanceLab.motorTune.manualHint')" />
@@ -396,6 +400,9 @@
 								? $t("plugins.resonanceLab.motorTune.surveyNone")
 								: $t(tuneSurveyChosen.length < 4 ? "plugins.resonanceLab.motorTune.surveyFew" : "plugins.resonanceLab.motorTune.surveyDone",
 									{ n: tuneSurveyChosen.length, list: tuneSurveyChosen.map((h) => `S${h}`).join(", ") }) }}
+						</v-alert>
+						<v-alert v-if="tuneSurveyUnmeasured && !tuneManual" type="info" variant="tonal" density="compact" class="mt-2">
+							{{ $t("plugins.resonanceLab.motorTune.surveyUnmeasured", { n: tuneSurveyUnmeasured.count, speed: tuneSurveyUnmeasured.speed }) }}
 						</v-alert>
 						<v-alert v-if="tuneSurveyData && tuneSurveyData.overflows > 0 && !tuneSurveyStale" type="warning" variant="tonal" density="compact" class="mt-2">
 							{{ $t("plugins.resonanceLab.overflows", { count: tuneSurveyData.overflows }) }}
@@ -425,6 +432,7 @@
 										<th>{{ $t("plugins.resonanceLab.motorTune.surveyTable.frequency") }}</th>
 										<th>{{ $t("plugins.resonanceLab.motorTune.surveyTable.amplitude") }}</th>
 										<th>{{ $t("plugins.resonanceLab.motorTune.surveyTable.snr") }}</th>
+										<th>{{ $t("plugins.resonanceLab.motorTune.surveyTable.scatter") }}</th>
 										<th>{{ $t("plugins.resonanceLab.motorTune.surveyTable.result") }}</th>
 									</tr>
 								</thead>
@@ -435,9 +443,10 @@
 											<td>{{ row.frequency.toFixed(0) }}</td>
 											<td>{{ row.amplitude.toFixed(4) }}</td>
 											<td>{{ row.snr === null ? "?" : Number.isFinite(row.snr) ? row.snr.toFixed(1) : "∞" }}</td>
+											<td>{{ row.stdev === null || row.amplitude <= 0 ? "—" : `±${Math.round((row.stdev / row.amplitude) * 100)}%` }}</td>
 										</template>
-										<template v-else><td>—</td><td>—</td><td>—</td></template>
-										<td>{{ $t(`plugins.resonanceLab.motorTune.surveyTable.${!row.measurable ? "nyquist" : tuneSurveyChosen.includes(row.harmonic) ? "chosen" : row.quiet ? "quiet" : "slotsFull"}`) }}</td>
+										<template v-else><td>—</td><td>—</td><td>—</td><td>—</td></template>
+										<td>{{ $t(`plugins.resonanceLab.motorTune.surveyTable.${!row.measurable ? "nyquist" : tuneSurveyChosen.includes(row.harmonic) ? "chosen" : row.quiet ? "quiet" : !row.stable ? "unstable" : "slotsFull"}`) }}</td>
 									</tr>
 								</tbody>
 							</v-table>
@@ -468,6 +477,9 @@
 						{{ $t("plugins.resonanceLab.cancel.notice") }}
 					</div>
 				</v-alert>
+				<template v-if="method === 'motortune' && !running">
+					<v-alert v-for="(note, i) in tuneLockNotes" :key="`lock${i}`" type="warning" variant="tonal" density="compact" class="mb-3">{{ note }}</v-alert>
+				</template>
 				<!-- Loading a saved capture: prominent, replaces whatever was on screen (already cleared) -->
 				<div v-if="loadingCapture" class="flex-grow-1 d-flex flex-column align-center justify-center text-medium-emphasis">
 					<v-progress-circular indeterminate size="56" width="4" color="primary" class="mb-4" />
@@ -660,6 +672,10 @@
 						<v-btn color="primary" variant="tonal" prepend-icon="mdi-content-save-check-outline" @click="keepMotorTune">
 							{{ $t("plugins.resonanceLab.motorTune.keep") }}
 						</v-btn>
+						<v-btn variant="tonal" prepend-icon="mdi-file-document-edit-outline" :loading="configDialogBusy"
+							   :disabled="!isConnected || running || motorTuneResult.codes.length === 0" @click="saveMotorTuneToConfig">
+							{{ $t("plugins.resonanceLab.motorTune.saveToConfig") }}
+						</v-btn>
 						<v-btn variant="text" prepend-icon="mdi-undo" @click="discardMotorTune">
 							{{ $t("plugins.resonanceLab.motorTune.discard") }}
 						</v-btn>
@@ -668,6 +684,9 @@
 							{{ $t("plugins.resonanceLab.motorTune.checkButton") }}
 						</v-btn>
 						<HelpTip :text="$t('plugins.resonanceLab.motorTune.checkHint')" />
+						<v-btn variant="text" prepend-icon="mdi-download" :disabled="tuneLogCount === 0 || running" @click="exportTuneDiagnostics">
+							{{ $t("plugins.resonanceLab.motorTune.diagnostics.button", { n: tuneLogCount }) }}
+						</v-btn>
 					</div>
 				</template>
 
@@ -892,8 +911,11 @@ const {
 	tuneSurveyRows,
 	tuneSurveyStale,
 	tuneSurveyChosen,
+	tuneSurveyUnmeasured,
 	canSurvey,
 	runTuneSurvey,
+	tuneLogCount,
+	exportTuneDiagnostics,
 	tuneHarmonicOptions,
 	numTuneMoves,
 	tuneExcess,
@@ -902,6 +924,7 @@ const {
 	detectedChip,
 	detectingChip,
 	tuneStatus,
+	tuneLockNotes,
 	tuneCheckRows,
 	tuneCheckVerdict,
 	canVerifyMotorTune,
@@ -955,6 +978,7 @@ const {
 	configCode,
 	configFileName,
 	saveOrientationToConfig,
+	saveMotorTuneToConfig,
 	saveShaperFit,
 	saveShaper,
 	cancelShaperScope,
@@ -986,6 +1010,14 @@ const {
    height. Inline `flex: 1 1 0` on the chart wrappers still wins over this. */
 .rlab-task-panel > * {
 	flex-shrink: 0;
+}
+/* ...and Vuetify 4's `.v-alert` ships `flex: 1 1` (basis 0, grow 1), so in this column every alert is
+   handed an equal slice of the free space instead of its content height - a stack of results came out
+   as identical short boxes with the tallest one cropped (centred, so the top AND bottom were lost).
+   Size alerts to their content. */
+.rlab-task-panel > .v-alert,
+.rlab-task-panel > .v-banner {
+	flex: 0 0 auto;
 }
 
 /* Task-rail item titles were being truncated with an ellipsis ("Accelerometer orien...") - the

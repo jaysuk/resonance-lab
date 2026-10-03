@@ -37,8 +37,12 @@ export interface TuningMeasurement {
 
 export interface HarmonicTuningResult {
 	harmonic: number;
-	/** Amplitude with no correction applied. */
+	/** Amplitude with no correction applied (mean of the two baseline captures). */
 	baseline: number;
+	/** How far apart the two baseline captures were: a rough measure of this order's capture-to-capture scatter. */
+	baselineSpread?: number;
+	/** The search's winner had `best.amplitude < baseline` but not by more than the scatter, so it was not adopted. */
+	withinScatter?: boolean;
 	best: TuningMeasurement;
 }
 
@@ -62,9 +66,9 @@ export function parsePhaseCorrections(reply: string): Array<PhaseCorrection> {
 	return out;
 }
 
-/** Number of `measure` calls one tuneHarmonic run makes: baseline + 4 probes + 4 refine + 1 verify (free phase), or baseline + 2 + 2 + 1 (constrained). */
+/** Number of `measure` calls one tuneHarmonic run makes: 2 baselines + 4 probes + 4 refine + 1 verify (free phase), or 2 baselines + 2 + 2 + 1 (constrained). */
 export function getMovesPerHarmonic(constrainPhase = false): number {
-	return constrainPhase ? 6 : 10;
+	return constrainPhase ? 7 : 11;
 }
 
 function normalizePhase(phase: number): number {
@@ -175,8 +179,9 @@ function fallbackOptimum(measurements: Array<TuningMeasurement>): Optimum {
 /**
  * Tune one harmonic: probe, fit, refine, refit, verify. `measure` applies the given correction
  * (magnitude/phase already clamped/normalised), records, analyses, and returns the amplitude.
- * Adopts the verified result only if it actually beats the baseline - a fit can converge on a worse
- * point when the signal is near the noise floor.
+ * Adopts the verified result only if it beats the baseline by more than the gap between the two baseline
+ * captures - a fit can converge on a worse point when the signal is near the noise floor, and a weak
+ * order's readings scatter by more than any small gain.
  */
 export async function tuneHarmonic(
 	harmonic: number,
@@ -193,7 +198,16 @@ export async function tuneHarmonic(
 		return m;
 	}
 
-	const baseline = await probe(0, 0);
+	// The uncorrected motor is captured twice: a single capture of a weak order can read several times
+	// higher or lower than the next, and a "win" measured against one lucky-low baseline is no win at all.
+	// The gap between the two is the scatter a correction has to beat.
+	const baselineA = await probe(0, 0);
+	const baselineB = await probe(0, 0);
+	const baseline: TuningMeasurement = {
+		harmonic, magnitude: 0, phase: 0, amplitude: (baselineA.amplitude + baselineB.amplitude) / 2,
+		amplitudes: [(baselineA.amplitudes[0] + baselineB.amplitudes[0]) / 2, (baselineA.amplitudes[1] + baselineB.amplitudes[1]) / 2],
+	};
+	const spread = Math.abs(baselineA.amplitude - baselineB.amplitude);
 
 	const initialPhases = constrainPhase ? [0, 180] : [0, 90, 180, 270];
 	for (const phase of initialPhases) {
@@ -223,8 +237,12 @@ export async function tuneHarmonic(
 	optimum = combinedOptimum(measurements, constrainPhase, schedule);
 
 	const verification = await probe(optimum.magnitude, optimum.phase);
-	const best = verification.amplitude < baseline.amplitude ? verification : {
+	const adopt = verification.amplitude < baseline.amplitude - spread;
+	const best = adopt ? verification : {
 		harmonic, magnitude: 0, phase: 0, amplitude: baseline.amplitude, amplitudes: baseline.amplitudes,
 	};
-	return { harmonic, baseline: baseline.amplitude, best };
+	return {
+		harmonic, baseline: baseline.amplitude, baselineSpread: spread, best,
+		withinScatter: !adopt && verification.amplitude < baseline.amplitude,
+	};
 }

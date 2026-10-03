@@ -71,12 +71,16 @@ export interface MotorTuneResult {
 	overflows?: number;
 	/** Harmonics nothing improved that were put back to the value the driver held before the run. */
 	keptPrevious?: Array<number>;
-	/** Final capture with every tuned correction in place: amplitude per tuned harmonic, and whether
-	 *  it got noticeably worse than the search measured (tuned harmonics disturbing each other). */
-	verification?: Array<{ harmonic: number; amplitude: number; regressed: boolean }>;
+	/** Final capture with every tuned correction in place: amplitude per tuned harmonic, what its own search
+	 *  measured, and whether it came out noticeably worse than that. A regressed harmonic is switched off
+	 *  again and its entry in `results` reverted to "no correction" - `searched` is the only place its
+	 *  search figure survives. */
+	verification?: Array<{ harmonic: number; amplitude: number; searched: number; regressed: boolean }>;
 	/** Speed (mm/s) and move length (mm) the run measured at, so a later check repeats the same pass. */
 	speed?: number;
 	length?: number;
+	/** The fundamental each move direction locked onto during the run, so "Verify corrections" starts from it. */
+	lockLegs?: Array<number>;
 	/** The config.g lines a user would add to persist this correction. */
 	codes: Array<string>;
 	/** False until the Keep button is pressed - Discard (or an abort) restores the prior values instead. */

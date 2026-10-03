@@ -274,6 +274,69 @@ export async function planShaperSave(
 	return { plan, notes };
 }
 
+/**
+ * Whether an existing config.g line is the one a motor-tune code line should replace: the same
+ * directive aimed at the same thing. `M970 X1` is identified by its axis letter (any value - `M970 X0`
+ * is replaced, not duplicated); a correction line by its driver `P` and harmonic `S`, and by carrying a
+ * `J` - which keeps a register write like `M569.2 P6 R1 V...` on the same driver from matching.
+ */
+function motorTuneLineMatches(existing: GcodeLine, wanted: GcodeLine): boolean {
+	if (wanted.code === "M970") {
+		const axis = Object.keys(wanted.params)[0];
+		return axis !== undefined && existing.params[axis] !== undefined;
+	}
+	return existing.params.P === wanted.params.P && existing.params.S === wanted.params.S && existing.params.J !== undefined;
+}
+
+/**
+ * Preview persisting a motor-tune result in config.g: each code line (`M970 <axis>1` if the run needed
+ * phase stepping, then one `M970.3`/`M569.2 P<drv> S<n> J<mag> O<phase>` per adopted harmonic) replaces
+ * the active line already aiming at the same axis / driver+harmonic, or is appended in one block with an
+ * audit comment. Lines left over from an earlier tune of a harmonic this run didn't adopt are left alone.
+ *
+ * A line that is conditional or uses `{...}` expressions blocks the whole plan rather than being
+ * rewritten blind, like every other edit here.
+ */
+export async function planMotorTuneSave(host: HostAdapter, codes: ReadonlyArray<string>): Promise<DirectiveEditPlan> {
+	const path = configPath(host);
+	const beforeText = await readConfig(host);
+	const before = parseLines(beforeText);
+	let lines = before;
+	const toAppend: Array<string> = [];
+	let disabledDuplicateFound = false;
+
+	for (const code of codes) {
+		const wanted = parseLines(code)[0];
+		if (!wanted?.code) {
+			continue;
+		}
+		const matches = findDirectives(lines, wanted.code).filter((m) => motorTuneLineMatches(m.line, wanted));
+		disabledDuplicateFound ||= matches.some((m) => m.line.disabled);
+		const active = matches.find((m) => !m.line.disabled);
+		if (active?.line.unsafe) {
+			return {
+				path, before: beforeText, after: beforeText, diff: [], appended: false, disabledDuplicateFound,
+				blocked: `The active ${wanted.code} line "${active.line.raw.trim()}" uses {...} expression syntax or sits inside a conditional - `
+					+ "edit config.g by hand for this one, it isn't safe to rewrite automatically.",
+			};
+		}
+		if (active) {
+			lines = replaceLine(lines, active.index, replaceDirective(active.line.raw, code));
+		} else {
+			toAppend.push(code);
+		}
+	}
+
+	const appended = toAppend.length > 0;
+	if (appended) {
+		lines = [...lines, ...parseLines(`; Resonance Lab ${dateStamp()}\n${toAppend.join("\n")}`)];
+	}
+	return {
+		path, before: beforeText, after: serializeLines(lines, detectEol(beforeText)),
+		diff: diffLines(before, lines), appended, disabledDuplicateFound,
+	};
+}
+
 /** Matches an M955 line belonging to ONE board, by its C prefix. Used for both destinations below - a
  *  tpost<N>.g can legitimately carry another board's M955 too, so neither branch may match "any M955". */
 function accelLineForBoard(canAddress: number): (line: GcodeLine) => boolean {

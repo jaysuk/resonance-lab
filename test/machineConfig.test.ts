@@ -4,7 +4,7 @@ import type { AccelerometerRef } from "../src/capture/orchestrator";
 import type { HostAdapter } from "../src/core/host";
 import {
 	applyEditPlan, configPath, findExistingWiring, findStrayTpostAccelLines, invalidateGcodeCache,
-	planAccelMigration, planAccelSave, planShaperSave, restartAfterConfigEdit, tpostPath,
+	planAccelMigration, planAccelSave, planMotorTuneSave, planShaperSave, restartAfterConfigEdit, tpostPath,
 } from "../src/config/machineConfig";
 
 // findExistingWiring/planAccelSave cache file text keyed by path (see machineConfig.ts), and every
@@ -431,6 +431,46 @@ describe("planShaperSave", () => {
 	it("throws for scope 'tool' with no tool number rather than guessing a target file", async () => {
 		const { host } = fakeHost({ "0:/sys/config.g": "G90" });
 		await expect(planShaperSave(host, "tool", null, GCODE, [])).rejects.toThrow();
+	});
+});
+
+describe("planMotorTuneSave", () => {
+	const CODES = ["M970 X1", "M970.3 P6 S2 J0.99 O0.7", "M970.3 P6 S4 J0.68 O182.4"];
+
+	it("appends the whole result as one stamped block when config.g has none of it", async () => {
+		const { host } = fakeHost({ "0:/sys/config.g": "G90\nM569 P6 S1" });
+		const plan = await planMotorTuneSave(host, CODES);
+		expect(plan.appended).toBe(true);
+		expect(plan.after.split("\n").slice(2)).toEqual([expect.stringMatching(/^; Resonance Lab /), ...CODES]);
+		expect(plan.diff.filter((d) => d.type === "removed")).toHaveLength(0);
+	});
+
+	it("replaces the existing line for the same driver and harmonic instead of duplicating it", async () => {
+		const { host } = fakeHost({
+			"0:/sys/config.g": "M970 X1\nM970.3 P6 S2 J0.10 O5.0 ; old tune\nM970.3 P6 S1 J0.30 O1.0",
+		});
+		const plan = await planMotorTuneSave(host, CODES);
+		const lines = plan.after.split("\n");
+		expect(lines[0]).toBe("M970 X1");
+		expect(lines[1]).toBe("M970.3 P6 S2 J0.99 O0.7 ; old tune");
+		expect(lines[2]).toBe("M970.3 P6 S1 J0.30 O1.0"); // a harmonic this run didn't adopt is left alone
+		expect(lines.filter((l) => l.startsWith("M970 X1"))).toHaveLength(1);
+		expect(lines.filter((l) => /^M970\.3 P6 S2 /.test(l))).toHaveLength(1);
+		expect(lines).toContain("M970.3 P6 S4 J0.68 O182.4"); // only the new harmonic is appended
+	});
+
+	it("does not mistake a register write on the same driver for a correction line", async () => {
+		const { host } = fakeHost({ "0:/sys/config.g": "M569.2 P6 R1 S2 V12345" });
+		const plan = await planMotorTuneSave(host, ["M569.2 P6 S2 J0.50 O0.0"]);
+		expect(plan.after).toContain("M569.2 P6 R1 S2 V12345");
+		expect(plan.after).toContain("M569.2 P6 S2 J0.50 O0.0");
+	});
+
+	it("refuses to rewrite a matching line that uses expression syntax", async () => {
+		const { host } = fakeHost({ "0:/sys/config.g": "M970.3 P6 S2 J{global.j} O0" });
+		const plan = await planMotorTuneSave(host, CODES);
+		expect(plan.blocked).toBeTruthy();
+		expect(plan.after).toBe(plan.before);
 	});
 });
 
