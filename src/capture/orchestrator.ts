@@ -134,7 +134,9 @@ async function deleteQuiet(io: MachineIO, path: string | undefined): Promise<voi
 
 /** Send a code and fail loudly if the firmware replied with an error (sendCode resolves either way). */
 async function sendChecked(io: MachineIO, code: string): Promise<void> {
-	const reply = await io.sendCode(code);
+	// Quiet: a motion/arming line's reply is never worth a popup, and RRF's HTTP reply can be a stale one
+	// from an earlier query ("Driver 6 waveform correction: none" on a G1). Errors still throw below.
+	const reply = await io.sendCode(code, true);
 	if (/^Error:/im.test(reply)) {
 		throw new Error(reply.trim());
 	}
@@ -432,6 +434,38 @@ export async function runNativeCapture(io: MachineIO, options: NativeCaptureOpti
 	return {
 		csvPath,
 		program: { lines: moves, pulses: moves.length, durationSec: 0, maxExcursion: span },
+		accelId: options.accelerometer.id,
+		runsBefore,
+	};
+}
+
+/** Samples in a rate probe: enough to reach the trailer, few enough to finish in well under a second. */
+export const RATE_PROBE_SAMPLES = 100;
+
+export interface RateProbeOptions {
+	accelerometer: AccelerometerRef;
+	/** See SweepCaptureOptions.activationCode. */
+	activationCode?: string;
+	/** See SweepCaptureOptions.activationSlot. */
+	activationSlot?: number;
+	samples?: number;
+}
+
+/**
+ * Record a few stationary samples purely to read the rate the firmware writes in the file's trailer.
+ * No motion and no program file, so nothing needs homing and nothing can crash into anything. The
+ * trailer carries the rate the device reported while collecting - the number every analysis in this
+ * plugin is computed against - which can differ from what M955 `S` asked for (the chip only has a few
+ * fixed output data rates, and the firmware rounds the request to one of them).
+ */
+export async function runRateProbe(io: MachineIO, options: RateProbeOptions): Promise<CaptureRun> {
+	const name = captureName("rate", "probe");
+	const csvPath = `${CAPTURE_DIR}/${name}`;
+	const runsBefore = await activateAndSnapshotRuns(io, options);
+	await sendChecked(io, `M956 ${armParam(options)}S${options.samples ?? RATE_PROBE_SAMPLES} A0 F"${name}"`);
+	return {
+		csvPath,
+		program: { lines: [], pulses: 0, durationSec: 0, maxExcursion: 0 },
 		accelId: options.accelerometer.id,
 		runsBefore,
 	};

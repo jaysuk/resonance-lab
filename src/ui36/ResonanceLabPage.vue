@@ -294,7 +294,7 @@
 			<v-divider vertical />
 
 			<!-- Task panel -->
-			<div class="flex-grow-1 d-flex flex-column pa-3" style="min-width: 0; min-height: 0; overflow-y: auto">
+			<div class="flex-grow-1 d-flex flex-column pa-3 rlab-task-panel" style="min-width: 0; min-height: 0; overflow-y: auto">
 				<!-- What this task does -->
 				<div class="d-flex align-center rlab-ga-2">
 					<v-icon large>{{ activeTask.icon }}</v-icon>
@@ -352,6 +352,13 @@
 							<span class="text--secondary">{{ $t("plugins.resonanceLab.controls.accelerometer") }}:</span> {{ selectedAccel.label }}
 							<HelpTip v-if="selectedAccelWiringMissing" :text="$t('plugins.resonanceLab.accel.wiringMissing')" />
 						</div>
+						<div class="d-flex align-center rlab-ga-1">
+							<v-btn small text :loading="rateProbing" :disabled="!canCheckAccelRate" @click="checkAccelRate">
+								<v-icon left small>mdi-sine-wave</v-icon>{{ $t("plugins.resonanceLab.accel.checkRate") }}
+							</v-btn>
+							<span v-if="accelRateReadout" class="text-body-2">{{ $t("plugins.resonanceLab.accel.rateResult", { rate: accelRateReadout.measured }) }}</span>
+							<HelpTip :text="$t('plugins.resonanceLab.accel.rateHelp')" />
+						</div>
 						<v-select v-if="method === 'sweep'" v-model="selectedAxes" :items="axisItems" multiple chips small-chips deletable-chips
 								  dense outlined hide-details style="min-width: 170px"
 								  :label="$t('plugins.resonanceLab.controls.axes')" :disabled="running" />
@@ -404,6 +411,9 @@
 						<span v-else class="text--secondary">{{ $t("plugins.resonanceLab.motorTune.chipUnknown") }}</span>
 						<span v-if="!tunePhaseStepping && detectedChip && !tuneChipUnsupported" class="text--secondary"> · {{ $t("plugins.resonanceLab.motorTune.stepDirHint") }}</span>
 					</div>
+					<v-alert v-if="selectedAccelToolInactive" type="warning" text dense class="mt-2">
+						{{ $t("plugins.resonanceLab.accel.toolNotActive", { tool: selectedAccelToolInactive }) }}
+					</v-alert>
 				</v-sheet>
 
 				<!-- Progress -->
@@ -598,20 +608,29 @@
 							</div>
 						</v-card-text>
 					</v-card>
-					<v-alert v-for="row in motorTuneRows" :key="row.harmonic" :type="row.improved ? 'success' : 'info'" text dense class="mb-2">
+					<v-alert v-for="row in motorTuneRows" :key="row.harmonic" :type="row.type" text dense class="mb-2">
 						{{ row.text }}
 					</v-alert>
 					<v-alert v-if="motorTuneResult.codes.length > 0" type="info" text dense class="mb-2">
 						{{ $t(tunePhaseStepping ? "plugins.resonanceLab.motorTune.resultCodesPhaseStepping" : "plugins.resonanceLab.motorTune.resultCodes") }}
 						<pre class="rlab-gcode-preview mt-1">{{ motorTuneResult.codes.join("\n") }}</pre>
 					</v-alert>
-					<div class="d-flex rlab-ga-2 mt-2">
+					<v-alert v-if="tuneCheckVerdict" :type="tuneCheckVerdict.type" text class="mb-2">
+						<div class="font-weight-medium">{{ tuneCheckVerdict.text }}</div>
+						<div v-for="(row, i) in tuneCheckRows" :key="i" class="text-body-2">{{ row.text }}</div>
+					</v-alert>
+					<div class="d-flex align-center rlab-ga-2 mt-2">
 						<v-btn color="primary" @click="keepMotorTune">
 							<v-icon left>mdi-content-save-check-outline</v-icon>{{ $t("plugins.resonanceLab.motorTune.keep") }}
 						</v-btn>
 						<v-btn text @click="discardMotorTune">
 							<v-icon left>mdi-undo</v-icon>{{ $t("plugins.resonanceLab.motorTune.discard") }}
 						</v-btn>
+						<v-spacer />
+						<v-btn outlined :loading="running" :disabled="!canVerifyMotorTune" @click="verifyMotorTune">
+							<v-icon left>mdi-check-decagram-outline</v-icon>{{ $t("plugins.resonanceLab.motorTune.checkButton") }}
+						</v-btn>
+						<HelpTip :text="$t('plugins.resonanceLab.motorTune.checkHint')" />
 					</div>
 				</template>
 
@@ -801,8 +820,13 @@ const {
 	accelItems,
 	accelItemsForPicker,
 	selectedAccelWiringMissing,
+	selectedAccelToolInactive,
 	accelSetupHints,
 	selectedAccel,
+	rateProbing,
+	canCheckAccelRate,
+	accelRateReadout,
+	checkAccelRate,
 	axisItems,
 	motorItems,
 	motorFreqHint,
@@ -840,6 +864,10 @@ const {
 	detectedChip,
 	detectingChip,
 	tuneStatus,
+	tuneCheckRows,
+	tuneCheckVerdict,
+	canVerifyMotorTune,
+	verifyMotorTune,
 	motorTuneRows,
 	motorTuneVerdict,
 	keepMotorTune,
@@ -913,6 +941,11 @@ const {
 </script>
 
 <style scoped>
+/* See ui37: keep the scrolling panel's children from shrinking and clipping long alerts. */
+.rlab-task-panel > * {
+	flex-shrink: 0;
+}
+
 /* Task-rail item titles were being truncated with an ellipsis ("Accelerometer orien...") - the
    longest labels don't fit Vuetify's default single-line, nowrap-and-ellipsis title even at the
    rail's 232px width. Let them wrap onto a second line instead. */

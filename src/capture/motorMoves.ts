@@ -165,6 +165,24 @@ export function maxSpeedForRate(o: MotorOption, sampleRate: number): number {
 	return sampleRate / (2 * 1.05 * o.fullStepsPerMm * o.stepFactor);
 }
 
+/**
+ * Fraction of the configured sampling rate a waveform tune plans against. The rate a recording really
+ * achieves can differ a little from the configured one (the motor sweep already tolerates that), so
+ * a harmonic sitting right at Nyquist on paper must not be admitted and then dropped mid-run.
+ */
+export const TUNE_RATE_MARGIN = 0.97;
+
+/**
+ * Highest test speed (mm/s) at which every harmonic in `harmonics` (S values, order S/4) can still be
+ * measured: the highest selected order, or the fundamental if that is higher, must stay clear of
+ * Nyquist with the same ±5% margin. Generalises maxSpeedForRate, which only covers order 1 - the
+ * fundamental is always located first, so no order below 1 can relax that bound.
+ */
+export function maxTuneSpeed(harmonics: Array<number>, o: MotorOption, sampleRate: number): number {
+	const highestOrder = Math.max(1, ...harmonics.map((h) => h / 4));
+	return maxSpeedForRate(o, sampleRate) / highestOrder;
+}
+
 /** Build a motor-isolating move of `lengthMm` centred on the machine, at `speedMmS`. */
 export function buildMotorMove(o: MotorOption, m: unknown, lengthMm: number, speedMmS: number): MotorMove {
 	const centers = o.axes.map((letter) => axisCenter(findAxis(m, letter)));

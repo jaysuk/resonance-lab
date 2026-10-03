@@ -17,6 +17,12 @@ export interface MotorHarmonics {
 	frequencies: Array<number>;
 	/** Amplitude per channel (outer) and order (inner), in g. */
 	amplitudes: Array<Float64Array>;
+	/**
+	 * Per-channel background level (g): the median amplitude at frequencies midway between adjacent
+	 * orders, where no motor harmonic lives. What a harmonic's amplitude has to clear to count as a real
+	 * signal rather than the accelerometer's own noise and broadband machine vibration.
+	 */
+	noiseFloor?: Float64Array;
 }
 
 export interface MotorSweep {
@@ -91,10 +97,14 @@ function largestPowerOfTwoAtMost(n: number): number {
  * @param numHarmonics Number of full-step harmonics to evaluate, including the fundamental
  * @param searchRange Relative range around nominalHz in which the true fundamental is searched
  * @param subdivisions Harmonic orders per full step (4 = electrical-cycle resolution, 1 = full-step only)
+ * @param evaluateHarmonics Full-step multiples to EVALUATE (orders up to this many), independent of
+ *   `numHarmonics`, which alone drives the fundamental search. Defaults to `numHarmonics`. Raising
+ *   `numHarmonics` instead would change where the fundamental is located, and with it every
+ *   amplitude - so reaching orders above 1 must go through this parameter.
  */
 export function analyzeMotorHarmonics(
 	channels: Array<ArrayLike<number>>, sampleRate: number, nominalHz: number,
-	numHarmonics = 8, searchRange = 0.05, subdivisions = 4,
+	numHarmonics = 8, searchRange = 0.05, subdivisions = 4, evaluateHarmonics = numHarmonics,
 ): MotorHarmonics {
 	if (channels.length < 1 || channels[0].length < 16) {
 		throw new Error("Too few samples for harmonic analysis");
@@ -105,11 +115,10 @@ export function analyzeMotorHarmonics(
 	subdivisions = Math.max(1, Math.round(subdivisions));
 
 	const N = channels[0].length;
-	const numOrders = Math.min(
-		numHarmonics * subdivisions,
-		Math.floor((sampleRate / 2 / (nominalHz * (1 + searchRange))) * subdivisions),
-	);
-	numHarmonics = Math.max(1, Math.floor(numOrders / subdivisions));
+	const nyquistOrders = Math.floor((sampleRate / 2 / (nominalHz * (1 + searchRange))) * subdivisions);
+	const searchOrders = Math.min(numHarmonics * subdivisions, nyquistOrders);
+	const numOrders = Math.min(Math.max(numHarmonics, evaluateHarmonics) * subdivisions, nyquistOrders);
+	numHarmonics = Math.max(1, Math.floor(searchOrders / subdivisions));
 
 	// Mean-correct and Hann-window each channel, at full length.
 	const windowed = channels.map((ch) => {
@@ -182,7 +191,18 @@ export function analyzeMotorHarmonics(
 		return out;
 	});
 
-	return { fundamental, orders, frequencies, amplitudes };
+	// Background level from the gaps between orders - same estimator as the amplitudes above, so the two
+	// are directly comparable. Gaps past Nyquist are skipped.
+	const noiseFloor = new Float64Array(windowed.length);
+	const gaps = orders.map((order) => (order - 0.5 / subdivisions) * fundamental).filter((f) => f > 0 && f < sampleRate / 2);
+	if (gaps.length > 0) {
+		windowed.forEach((ch, c) => {
+			const levels = gaps.map((f) => (2 * Math.sqrt(dftEnergy(ch, f / sampleRate))) / windowSum).sort((a, b) => a - b);
+			noiseFloor[c] = levels[Math.floor(levels.length / 2)];
+		});
+	}
+
+	return { fundamental, orders, frequencies, amplitudes, noiseFloor };
 }
 
 /** Combine per-channel amplitudes into one magnitude per order (root sum of squares across channels). */
@@ -197,6 +217,9 @@ export function combineAxes(h: MotorHarmonics): Float64Array {
 	}
 	return out;
 }
+
+/** Displacement (um) below which a harmonic counts as low. */
+export const LOW_DISPLACEMENT_UM = 0.5;
 
 // Standard gravity (mm/s^2), for converting an acceleration amplitude into a displacement amplitude.
 const GRAVITY_MM_S2 = 9806.65;
@@ -273,7 +296,7 @@ export function gradeOrders(sweep: MotorSweep): Array<MotorFinding> {
 				}
 				const displacementUm = toDisplacementUm(amplitude, sweep.frequencies[i]);
 				if (!worst || displacementUm > worst.displacementUm) {
-					const level: MotorLevel = displacementUm < 0.5 ? "low" : displacementUm < 2 ? "moderate" : "high";
+					const level: MotorLevel = displacementUm < LOW_DISPLACEMENT_UM ? "low" : displacementUm < 2 ? "moderate" : "high";
 					worst = { key, displacementUm, frequency: sweep.frequencies[i], ratio, level };
 				}
 			});

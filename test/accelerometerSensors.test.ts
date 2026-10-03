@@ -7,7 +7,7 @@
 import { describe, expect, it } from "vitest";
 
 import { parseAccelCsv } from "../src/capture/csv";
-import { runNativeCapture, runSweepCapture } from "../src/capture/orchestrator";
+import { runNativeCapture, runRateProbe, runSweepCapture } from "../src/capture/orchestrator";
 import { findAccelModelEntry, mapAccelerometers } from "../src/capture/tools";
 import { findAccelWiring, findAllAccelWiring, parseCPrefix } from "../src/config/accelWiring";
 
@@ -136,6 +136,28 @@ describe("arming by slot alone (RRF >= 3.7.0-rc.2)", () => {
 		};
 		expect(await armed({ activationCode: 'M955 P0 C"121.i2c.lis" I6' })).toContain("M956 P0 S");
 		expect(await armed({})).toContain("M956 P121.0 S");
+	});
+});
+
+describe("runRateProbe", () => {
+	it("arms a short stationary M956 by slot, with no moves and no program upload", async () => {
+		const sent: Array<string> = [];
+		const uploads: Array<string> = [];
+		const io = { sendCode: async (code: string) => { sent.push(code); return "ok"; }, upload: async (p: string) => { uploads.push(p); }, download: async () => "", accelRuns: () => 3 };
+		const run = await runRateProbe(io, { accelerometer: { id: "121.0", label: "T0", slot: 1 }, activationSlot: 1 });
+		expect(sent).toHaveLength(1);
+		expect(sent[0]).toMatch(/^M956 P1 S100 A0 F"rlab-rate-probe-\d+\.csv"$/);
+		expect(uploads).toEqual([]);
+		expect(run.runsBefore).toBe(3);
+		expect(run.csvPath).toContain("0:/sys/accelerometer/");
+	});
+
+	it("re-issues the activation line first on RC1 and arms P0", async () => {
+		const sent: Array<string> = [];
+		const io = { sendCode: async (code: string) => { sent.push(code); return "ok"; }, upload: async () => {}, download: async () => "", accelRuns: () => 0 };
+		await runRateProbe(io, { accelerometer: { id: "121.0", label: "T0" }, activationCode: 'M955 P0 C"121.i2c.lis" I6' });
+		expect(sent[0]).toContain("M955");
+		expect(sent[1]).toContain("M956 P0 S100");
 	});
 });
 

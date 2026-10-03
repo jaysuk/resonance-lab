@@ -92,7 +92,7 @@ first if only the 3.6 build breaks after adding a new shared module.
   the gate. **Never hardcode a board list** (checked: the stock DWC plugin's own list has already
   grown once, `["MB6HC"]` → `["MB6HC","EXP3HC","EXP1HCL","M23CL"]`, and the object model carries no
   driver chip-type field to check against anyway) — command choice comes from
-  `motorTuneSupport.ts`'s `usesFreePhaseCorrection` (`M970.3`, free phase, harmonics 2 & 4, if
+  `motorTuneSupport.ts`'s `usesFreePhaseCorrection` (`M970.3`, free phase, any of harmonics 1-8 — default 2 & 4, see below — if
   `axis.phaseStep` **or** the driver's `boards[].drivers[].config.mode` is `direct`/`assistedOpen` — a
   closed-loop driver has `phaseStep` false but still takes `M970.3`, as DWC's own plugin does; else
   `M569.2`'s sine table, phase constrained to 0/180, harmonic 4 only — harmonic 2/coil-imbalance isn't
@@ -133,6 +133,86 @@ first if only the 3.6 build breaks after adding a new shared module.
   expansion-board drivers too (confirmed: the CAN message table for `M970.3` lives in the separate
   `Duet3D/CANlib` repo, not RepRapFirmware itself — a missing `EutProcessM970Point3`-style handler in
   the firmware repo proves nothing, since generic CAN commands are table-driven in CANlib).
+  - **Multi-harmonic tuning** (`src/analysis/motorTunePlan.ts`; plan and review notes in
+    `docs/phase-stepping-plan.md`). The 2-and-4 limit was borrowed from DWC's tune dialog, not derived —
+    the firmware accepts `S1`–`S16` (`MaxPhaseCorrectionHarmonic = 16`), the catalogue here is
+    `{1..8}` (5 and 7 were left out of the first catalogue for no physical reason; a driver still holds at most four corrections at once, so a selection of more than four is refused up front with an inline message and a disabled Measure). **S maps to full-step order S/4** for every S: the firmware adds `J·sin(Sθ+O)` to
+    the electrical angle θ (4096 units per cycle), and the rotor follows the field vector's *angle*, so
+    to first order a correction acts on order S/4 alone and `motorTuning.ts`'s least-squares model holds
+    for every harmonic (second-order terms scale with J², J ≤ 4°). What is unproven is *signal
+    strength* at orders 0.25/0.75/1.5/2 — hence the opt-in survey and `tuneHarmonic`'s "adopt only if it
+    beats baseline" guard; drop a harmonic from the catalogue if hardware validation never shows it above
+    the noise floor.
+    - **Silent-zero hazard.** `measureOnce` used to do `orders.indexOf(harmonic/4)` and substitute 0 for
+      -1; with only orders ≤1 analysed, harmonics 6/8 read zero on every probe and the run reported "no
+      improvement". `analyzeMotorHarmonics` also drops any order above Nyquist on its own. Use
+      `orderAmplitude`, which throws — never reintroduce a `?? 0` / `>= 0 ? … : 0` there.
+    - **Higher orders go through `analyzeMotorHarmonics`'s `evaluateHarmonics` parameter, never by
+      raising `numHarmonics`**, which also drives the fundamental search (summing energy over that many
+      multiples) and would silently shift where harmonics 2 and 4 are measured.
+      `test/motorTunePlan.test.ts` pins that S=2/4 results are bit-identical.
+    - **Four correction slots per driver** (`MaxPhaseCorrectionHarmonics`, same in RRF and
+      Duet3Expansion; a fifth write fails mid-run). `planHarmonics` counts entries for harmonics *not*
+      being tuned against the four; a selected harmonic with an existing entry reuses its slot, because
+      its baseline probe writes `J0`, which frees exactly that slot. Plan problems (slots, Nyquist) fail
+      the run **before any write**, naming what to deselect. The bound for order < 1 is the fundamental
+      itself (always located first), so `maxTuneSpeed`/`harmonicFeasible` use `max(1, S/4)`.
+    - The default test speed follows the selection (`maxTuneSpeed`, highest order governs, still
+      capped at the ~400 Hz full-step target) and is re-defaulted on selection/motor change unless the
+      user typed one (tracked by comparing against the last auto value). That watcher is keyed on the
+      motor *letter* and the selection string for the same reason the chip watcher is.
+    - **Restore covers exactly what the run may write**: `written` on `MotorTuneResult` (the planned
+      harmonics, including ones a survey cleared and found quiet), and Discard uses it. Survey clears
+      every planned harmonic to read the uncorrected motor, then immediately restores the quiet ones.
+      The survey skips quiet harmonics rather than asking the user mid-run (no interactive pause in the
+      run loop). "Quiet" is relative to the test speed — the machine's response depends on absolute
+      frequency — and is worded that way. **Quiet = amplitude under `SURVEY_MIN_SNR` (3×) the background
+      level, not a displacement cut-off**: displacement falls with frequency², so a µm threshold would skip
+      S6/S8 however clean their signal. The background is `MotorHarmonics.noiseFloor` (median amplitude
+      midway between adjacent orders); the displacement threshold survives only as a fallback when an
+      analysis carries no noise estimate.
+    - **Survey-first selection (S1–S16).** `TUNE_HARMONICS` is 1..16 (S16 = order 4). `runTuneSurvey`
+      captures the *uncorrected* motor once (it clears whatever the driver holds, then restores exactly
+      that — the driver is left as found), `surveyHarmonics` ranks all sixteen on signal over background
+      (an order above Nyquist gets `measurable: false`, never an exception), and `pickTopHarmonics` takes
+      the four strongest that cleared the background (`MAX_CORRECTION_SLOTS`) — which is also the tuning
+      order, strongest first. Every chip is greyed out until a survey valid for *this motor, driver, speed
+      and length* exists (`tuneSurveyKey`; quiet is relative to the speed, so the default-speed watcher is
+      deliberately NOT tied to the selection); then only the chosen four are enabled. `tuneManual` lifts
+      that restriction but never the physical ones (a chip above Nyquist at the current speed stays
+      disabled, and more than four is refused). Chip reasons are tooltips (`motorTune.chipReason.*`);
+      the readings (Hz, g, × background, result) are listed in a collapsible table so a user can see the
+      accelerometer data behind the choice. There is no inline "survey first" option any more.
+    - **Every recording is deleted as soon as it is read, in a `finally`** (`captureLegs`), so a CSV that
+      fails to parse is removed too; `sendChecked` and the tuning writes are `quiet` (no popups).
+    - **A harmonic nothing improved goes back to what the driver held before the run** (`keptPrevious`),
+      not to J0 — its baseline probe cleared the entry, and leaving it off would silently drop a working
+      correction (config.g would bring it back on reboot, so the live machine and the file disagree).
+    - **Planning uses `TUNE_RATE_MARGIN` (0.97) × the configured sampling rate** (plan, nyquist error text
+      and default speed): the achieved rate differs slightly, and a harmonic right at Nyquist would pass
+      the plan and then throw in `orderAmplitude` mid-run. The default speed also follows the selected
+      accelerometer's configured rate from the object model (1000 Hz if unreported).
+    - A final capture with every correction in place re-measures the orders a correction was adopted for;
+      `verifyRegressed` flags one that rose >25% above what its own search measured
+      (`VERIFY_REGRESSION_RATIO`, a heuristic) **and** by at least 10% of its untuned baseline, so scatter
+      on a harmonic tuned down to the noise floor isn't reported as a regression.
+    - **3.6 has no phase stepping**, so `ui36/` deliberately omits the harmonic chips/survey toggle (the
+      composable's `tuneSelected`/`tuneSurvey` stay shared and default to S2+S4; only `ui37/` binds them).
+      Don't add them back to the Vuetify 2 template.
+    - **A TMC5160/TMC2240 on a step/dir axis still gets the multi-harmonic options** (`m970Capable`): the
+      STM32 fork reports `phaseStep` false until `M970 <axis>1` is sent, and `PhaseStep::GetCorrection` only
+      acts in phase stepping, so a correction written to a step/dir axis is inert. Detection therefore
+      sends a `M970.3 P<drv>` query (after the chip read, only for a waveform-capable family, never on
+      3.6 — `HostAdapter.supportsPhaseStepping`) and, if the firmware answers, `tunePhaseStepping` is true.
+      `tuneNeedsPhaseMode` then makes the run send `M970 <axis>1` before the first write and `M970 <axis>0`
+      in a `finally` (cancel/error included), so the axis is left as found; the result's `codes` start with
+      `M970 <axis>1` since a kept correction needs it in config.g too. Not yet validated on hardware.
+    - **Chip detection reads the TMC5160/2240 register map first and only reads the other one if that
+      doesn't identify the chip**, caches the result per driver for the session, and swallows read failures
+      — the detection watcher runs when the page opens, and every extra register read (or a rejection
+      escaping it) is a chance for a popup. `logReply: false` (the `quiet` argument) only suppresses DWC's
+      own reply log; firmware messages DWC receives separately still show.
+    - Smoke/unit coverage: `motorTunePlan.test.ts`; the run loop itself is not simulated end to end.
 - **Single-accelerometer activation (RRF ≥3.7.0-rc.1, `src/config/accelWiring.ts`,
   `src/config/firmwareVersion.ts`'s `MIN_ACCEL_FIRMWARE`)** — `81d68e1` collapsed `M955`/`M956` to
   exactly one active accelerometer machine-wide: `C` (with an optional `<canAddress>.` prefix) is
@@ -383,6 +463,13 @@ first if only the 3.6 build breaks after adding a new shared module.
   shaper" dialog offering "T-1 only" as a real button (`planShaperSave` now also rejects a negative
   `toolNumber`, not just `null`, as a second line of defence). If a fourth watcher is ever chained onto
   `selectedAccel`, check whether it needs the same flag.
+- **A toolboard accelerometer is only measurable while its own tool is the active one.** On a
+  tool-changer the tool may be parked, so the accelerometer isn't on the carriage. `useResonanceLab.ts`'s
+  `inactiveToolFor` (CAN address ≠ 0, derived `toolNumber` ≠ `state.currentTool`) disables Measure
+  (`selectedAccelToolInactive`, shown as a warning in both templates) and is also checked in
+  `resolveActivationCode`, the one gate every capture path passes through. Mainboard accelerometers
+  and ones with no derivable tool are never blocked. The plugin does not pick the tool up itself — that
+  is a physical move the user should trigger.
 - **`tools.ts`'s tool↔accelerometer derivation is only as good as config.g's own consistency.** It
   reads `tools[N].extruders[0]` to find the driving board — if a tool's `M563 ... D<n>` extruder index
   doesn't actually match the board its `H`/`F` params point at (e.g. a copy-paste `D2` left over from

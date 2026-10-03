@@ -39,9 +39,11 @@ ecosystems or their tools are referenced in code, comments, or documentation.
    motor and driver themselves rather than the machine's structural response — see `motorHarmonics.ts`
    below. Analysis-only: it emits no `M970.3`/`M569.2` driver-correction G-code and needs no board or
    driver capability beyond `M955`/`M956` — unlike mode 8 below, it works on any RRF version.
-8. **Motor waveform tuning** — a least-squares search (see `motorTuning.ts` below) for the
-   current-waveform correction that minimises vibration at one harmonic of a motor's electrical
-   cycle, then writes it with `M970.3` (free phase, harmonics 2 and 4 — for a driver that commutates
+8. **Motor tuning (phase stepping)** (the waveform-tuning task) — a least-squares search (see `motorTuning.ts` below) for the
+   current-waveform correction that minimises vibration at each chosen harmonic of a motor's
+   electrical cycle, then writes it with `M970.3` (free phase, harmonics 1, 2, 3, 4, 6 and 8, default
+   2 and 4, at most four at once; an optional survey move first skips harmonics that are already quiet,
+   and a final capture with every correction in place checks they didn't disturb each other — for a driver that commutates
    in software: an axis in phase stepping, or a driver in closed / assisted-open loop, i.e. `direct`
    mode, as DuetWebControl's own Input Shaping plugin does) or `M569.2` (the driver's sine table,
    harmonic 4 only). There is deliberately no board list: the 1HCL (`EXP1HCL`), `M23CL` and INDX
@@ -209,6 +211,16 @@ nor object model with it) keeps working unchanged.
   rotor-fixed error component shifts by the load angle and flips sign with direction. 10 probe moves
   per harmonic with a free phase (`M970.3`), 6 with phase constrained to 0/180 (`M569.2`'s sine
   table, which can't represent anything else).
+- `motorTunePlan.ts` — everything around that search that needs no printer: the harmonic catalogue
+  (S is full-step order S/4: the firmware adds `J·sin(Sθ+O)` to the electrical angle, and the rotor
+  follows that angle, so to first order a correction at S acts on order S/4 alone — which is why the
+  search model holds for every S), `planHarmonics` (the driver's four correction slots, where a
+  selected harmonic reuses its own existing slot because its baseline probe writes `J0`, and the
+  Nyquist limit per order), `orderAmplitude` (throws rather than returning zero for an order the
+  analysis didn't produce — a silent zero makes every probe identical and the fit degenerate),
+  `surveyHarmonics` and `estimateTuneMoves`. Orders above 1 reach `analyzeMotorHarmonics` through its
+  separate `evaluateHarmonics` parameter; `numHarmonics` alone drives the fundamental search, so
+  adding higher orders never moves where harmonics 2 and 4 are measured.
 
 Three small pure modules in `src/config/` support the tuning gate, independent of the config-editing
 modules described under "Config persistence" in `CLAUDE.md`: `firmwareVersion.ts` (the minimum-firmware

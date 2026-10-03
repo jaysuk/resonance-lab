@@ -204,6 +204,81 @@ describe("Resonance Lab smoke", () => {
 		}
 	});
 
+	// A free-phase driver can tune several harmonics; the sine table (M569.2) represents harmonic 4 only,
+	// so the harmonic chips and the survey toggle must not be offered for it at all.
+	it("offers the harmonic chips and survey toggle only for a phase-stepping driver", async () => {
+		const phaseStepped = (phaseStep: boolean) => loadObjectModel({
+			boards: [{ shortName: "MB6HC", firmwareVersion: "3.7.0-rc.1", canAddress: 0, accelerometer: { points: 0, runs: 0 } }],
+			move: {
+				kinematics: {},
+				axes: [{
+					letter: "Z", visible: true, homed: true, min: 0, max: 200,
+					stepsPerMm: 400, microstepping: { value: 16 }, phaseStep,
+					drivers: [{ board: 0, driver: 0 }], acceleration: 500, speed: 40,
+				}],
+			},
+		});
+		setConnected(true);
+		method.value = "motortune";
+		try {
+			setModel(phaseStepped(true));
+			let wrapper = mountInDwc(ResonanceLabPage);
+			try {
+				expect(wrapper.text()).toContain("resonanceLab.motorTune.harmonicsLabel");
+				expect(wrapper.text()).toContain("S16");
+				expect(wrapper.text()).toContain("resonanceLab.motorTune.surveyButton");
+			} finally {
+				wrapper.unmount();
+			}
+
+			setModel(phaseStepped(false));
+			wrapper = mountInDwc(ResonanceLabPage);
+			try {
+				expect(wrapper.text()).not.toContain("resonanceLab.motorTune.harmonicsLabel");
+				expect(wrapper.text()).not.toContain("resonanceLab.motorTune.surveyButton");
+			} finally {
+				wrapper.unmount();
+			}
+		} finally {
+			method.value = "sweep";
+		}
+	});
+
+	// Survey-first: with no survey every harmonic chip is greyed out, and the manual tickbox is the only
+	// thing that lifts that (it never lifts the physical limits, but a plain phase-stepping Z axis has none here).
+	it("greys out every harmonic until a survey has run, unless manual selection is ticked", async () => {
+		setConnected(true);
+		method.value = "motortune";
+		setModel(loadObjectModel({
+			boards: [{ shortName: "MB6HC", firmwareVersion: "3.7.0-rc.1", canAddress: 0, accelerometer: { points: 0, runs: 0, samplingRate: 3200 } }],
+			move: {
+				kinematics: {},
+				axes: [{
+					letter: "Z", visible: true, homed: true, min: 0, max: 200,
+					stepsPerMm: 400, microstepping: { value: 16 }, phaseStep: true,
+					drivers: [{ board: 0, driver: 0 }], acceleration: 500, speed: 40,
+				}],
+			},
+		}));
+		const wrapper = mountInDwc(ResonanceLabPage);
+		try {
+			const chips = () => wrapper.findAll(".v-chip").filter((c) => /^S\d+ ·/.test(c.text()));
+			expect(chips()).toHaveLength(16);
+			expect(chips().every((c) => c.classes().includes("v-chip--disabled"))).toBe(true);
+			expect(wrapper.text()).toContain("resonanceLab.motorTune.surveyFirst");
+
+			const manual = wrapper.findAll("input[type=checkbox]").find((i) => i.element.closest("label, .v-input")?.textContent?.includes("manualLabel"));
+			expect(manual).toBeTruthy();
+			await manual!.setValue(true);
+			await new Promise((r) => setTimeout(r, 20));
+			const s2 = chips().find((c) => c.text().startsWith("S2 ·"));
+			expect(s2!.classes()).not.toContain("v-chip--disabled");
+		} finally {
+			method.value = "sweep";
+			wrapper.unmount();
+		}
+	});
+
 	// R1 regression: the motor picker is re-enabled the moment a run finishes, while the result card
 	// and its Discard button are still on screen. Discard must restore the driver that was actually
 	// tuned (recorded on the result), NOT whatever motor happens to be selected now - otherwise it
@@ -297,6 +372,45 @@ describe("Resonance Lab smoke", () => {
 			method.value = "sweep";
 			measurementRunning.value = false;
 			wrapper.unmount();
+		}
+	});
+
+	// A toolboard accelerometer only sits on the carriage while its own tool is picked up; on a
+	// tool-changer the tool may be parked, so measuring must be refused until it is the active tool.
+	it("refuses to measure with a toolboard accelerometer whose tool is not the active one", async () => {
+		const toolChanger = (currentTool: number) => loadObjectModel({
+			boards: [
+				{ shortName: "MB6HC", firmwareVersion: "3.7.0-rc.2", canAddress: 0 },
+				{ shortName: "SHT36v3", firmwareVersion: "3.7.0-rc.2", canAddress: 121 },
+			],
+			sensors: { accelerometers: [{ orientation: 20, port: "121.spi.cs.acc+int.acc", resolution: 10, runs: 0, samplingRate: 1000 }] },
+			move: { extruders: [{ driver: { board: 0 } }, { driver: { board: 121 } }] },
+			tools: [{ number: 0, name: "Main", extruders: [0] }, { number: 1, name: "Rapido", extruders: [1] }],
+			state: { currentTool },
+		});
+		setConnected(true);
+		method.value = "move";
+		try {
+			setModel(toolChanger(0));
+			let wrapper = mountInDwc(ResonanceLabPage);
+			try {
+				expect(wrapper.text()).toContain("resonanceLab.accel.toolNotActive");
+				const measureBtn = wrapper.findAll("button").find((b) => b.text().includes("resonanceLab.controls.measure"));
+				expect(measureBtn!.attributes("disabled")).toBeDefined();
+			} finally {
+				wrapper.unmount();
+			}
+
+			setModel(toolChanger(1));
+			wrapper = mountInDwc(ResonanceLabPage);
+			try {
+				expect(wrapper.text()).not.toContain("resonanceLab.accel.toolNotActive");
+			} finally {
+				wrapper.unmount();
+			}
+		} finally {
+			method.value = "sweep";
+			measurementRunning.value = false;
 		}
 	});
 

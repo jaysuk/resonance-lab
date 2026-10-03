@@ -64,6 +64,19 @@ export interface MotorTuneResult {
 	/** Detected chip name (e.g. "TMC5160"), or null when detection didn't resolve. */
 	chip: string | null;
 	results: Array<HarmonicTuningResult>;
+	/** Every harmonic this run may have written to the driver - what Discard restores. Absent on a
+	 *  result from before multi-harmonic tuning, where it is just the harmonics in `results`. */
+	written?: Array<number>;
+	/** Highest accelerometer sample-overflow count seen across the run's recordings; any is worth a warning. */
+	overflows?: number;
+	/** Harmonics nothing improved that were put back to the value the driver held before the run. */
+	keptPrevious?: Array<number>;
+	/** Final capture with every tuned correction in place: amplitude per tuned harmonic, and whether
+	 *  it got noticeably worse than the search measured (tuned harmonics disturbing each other). */
+	verification?: Array<{ harmonic: number; amplitude: number; regressed: boolean }>;
+	/** Speed (mm/s) and move length (mm) the run measured at, so a later check repeats the same pass. */
+	speed?: number;
+	length?: number;
 	/** The config.g lines a user would add to persist this correction. */
 	codes: Array<string>;
 	/** False until the Keep button is pressed - Discard (or an abort) restores the prior values instead. */

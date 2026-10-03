@@ -266,7 +266,7 @@
 			<v-divider vertical />
 
 			<!-- Task panel -->
-			<div class="flex-grow-1 d-flex flex-column pa-3" style="min-width: 0; min-height: 0; overflow-y: auto">
+			<div class="flex-grow-1 d-flex flex-column pa-3 rlab-task-panel" style="min-width: 0; min-height: 0; overflow-y: auto">
 				<!-- What this task does -->
 				<div class="d-flex align-center ga-2">
 					<v-icon size="large">{{ activeTask.icon }}</v-icon>
@@ -318,6 +318,13 @@
 						<div v-else-if="selectedAccel" class="text-body-2 d-flex align-center ga-1">
 							<span class="text-medium-emphasis">{{ $t("plugins.resonanceLab.controls.accelerometer") }}:</span> {{ selectedAccel.label }}
 							<HelpTip v-if="selectedAccelWiringMissing" :text="$t('plugins.resonanceLab.accel.wiringMissing')" />
+						</div>
+						<div class="d-flex align-center ga-1">
+							<v-btn size="small" variant="text" prepend-icon="mdi-sine-wave" :loading="rateProbing" :disabled="!canCheckAccelRate" @click="checkAccelRate">
+								{{ $t("plugins.resonanceLab.accel.checkRate") }}
+							</v-btn>
+							<span v-if="accelRateReadout" class="text-body-2">{{ $t("plugins.resonanceLab.accel.rateResult", { rate: accelRateReadout.measured }) }}</span>
+							<HelpTip :text="$t('plugins.resonanceLab.accel.rateHelp')" />
 						</div>
 						<v-select v-if="method === 'sweep'" v-model="selectedAxes" :items="axisItems" multiple chips closable-chips
 								  density="compact" variant="outlined" hide-details style="min-width: 170px"
@@ -371,6 +378,74 @@
 						<span v-else class="text-medium-emphasis">{{ $t("plugins.resonanceLab.motorTune.chipUnknown") }}</span>
 						<span v-if="!tunePhaseStepping && detectedChip && !tuneChipUnsupported" class="text-medium-emphasis"> · {{ $t("plugins.resonanceLab.motorTune.stepDirHint") }}</span>
 					</div>
+					<div v-if="method === 'motortune' && tunePhaseStepping" class="mt-2">
+						<div class="d-flex align-center flex-wrap ga-2">
+							<v-btn size="small" color="primary" variant="tonal" prepend-icon="mdi-chart-bar" :disabled="!canSurvey" @click="runTuneSurvey">
+								{{ $t("plugins.resonanceLab.motorTune.surveyButton") }}
+							</v-btn>
+							<HelpTip :text="$t('plugins.resonanceLab.motorTune.surveyHint')" />
+							<v-spacer />
+							<v-checkbox v-model="tuneManual" density="compact" hide-details :disabled="running" :label="$t('plugins.resonanceLab.motorTune.manualLabel')" />
+							<HelpTip :text="$t('plugins.resonanceLab.motorTune.manualHint')" />
+						</div>
+						<v-alert v-if="tuneManual" type="warning" variant="tonal" density="compact" class="mt-2">{{ $t("plugins.resonanceLab.motorTune.manualNote") }}</v-alert>
+						<v-alert v-else-if="tuneSurveyStale" type="warning" variant="tonal" density="compact" class="mt-2">{{ $t("plugins.resonanceLab.motorTune.surveyStale") }}</v-alert>
+						<v-alert v-else-if="tuneSurveyRows.length === 0" type="info" variant="tonal" density="compact" class="mt-2">{{ $t("plugins.resonanceLab.motorTune.surveyFirst") }}</v-alert>
+						<v-alert v-else type="success" variant="tonal" density="compact" class="mt-2">
+							{{ tuneSurveyChosen.length === 0
+								? $t("plugins.resonanceLab.motorTune.surveyNone")
+								: $t(tuneSurveyChosen.length < 4 ? "plugins.resonanceLab.motorTune.surveyFew" : "plugins.resonanceLab.motorTune.surveyDone",
+									{ n: tuneSurveyChosen.length, list: tuneSurveyChosen.map((h) => `S${h}`).join(", ") }) }}
+						</v-alert>
+						<v-alert v-if="tuneSurveyData && tuneSurveyData.overflows > 0 && !tuneSurveyStale" type="warning" variant="tonal" density="compact" class="mt-2">
+							{{ $t("plugins.resonanceLab.overflows", { count: tuneSurveyData.overflows }) }}
+						</v-alert>
+						<div class="d-flex align-center flex-wrap ga-2 mt-2">
+							<span class="text-caption text-medium-emphasis">{{ $t("plugins.resonanceLab.motorTune.harmonicsLabel") }}</span>
+							<HelpTip :text="$t('plugins.resonanceLab.motorTune.harmonicsHint')" />
+							<v-chip-group v-model="tuneSelected" multiple column>
+								<span v-for="o in tuneHarmonicOptions" :key="o.harmonic" :title="o.reason">
+									<v-chip :value="o.harmonic" size="small" filter variant="outlined" :disabled="running || o.disabled">{{ o.title }}</v-chip>
+								</span>
+							</v-chip-group>
+						</div>
+						<div class="text-caption" :class="tuneExcess > 0 ? 'text-error' : 'text-medium-emphasis'">
+							{{ tuneExcess > 0
+								? $t("plugins.resonanceLab.motorTune.tooMany", { max: 4, n: tuneExcess })
+								: $t("plugins.resonanceLab.motorTune.slots", { n: tuneSelected.filter((h) => tuneHarmonicOptions[h - 1] && !tuneHarmonicOptions[h - 1].disabled).length, max: 4 }) }}
+							· {{ $t("plugins.resonanceLab.motorTune.moveCount", { n: numTuneMoves }) }}
+						</div>
+						<div v-if="tuneNeedsPhaseMode" class="text-caption text-medium-emphasis">{{ $t("plugins.resonanceLab.motorTune.phaseModeNote") }}</div>
+						<details v-if="tuneSurveyRows.length > 0" class="mt-2">
+							<summary class="text-caption text-medium-emphasis" style="cursor: pointer">{{ $t("plugins.resonanceLab.motorTune.surveyTable.title") }}</summary>
+							<v-table density="compact">
+								<thead>
+									<tr>
+										<th>{{ $t("plugins.resonanceLab.motorTune.surveyTable.harmonic") }}</th>
+										<th>{{ $t("plugins.resonanceLab.motorTune.surveyTable.frequency") }}</th>
+										<th>{{ $t("plugins.resonanceLab.motorTune.surveyTable.amplitude") }}</th>
+										<th>{{ $t("plugins.resonanceLab.motorTune.surveyTable.snr") }}</th>
+										<th>{{ $t("plugins.resonanceLab.motorTune.surveyTable.result") }}</th>
+									</tr>
+								</thead>
+								<tbody>
+									<tr v-for="row in tuneSurveyRows" :key="row.harmonic">
+										<td>S{{ row.harmonic }} · {{ row.order }}×</td>
+										<template v-if="row.measurable">
+											<td>{{ row.frequency.toFixed(0) }}</td>
+											<td>{{ row.amplitude.toFixed(4) }}</td>
+											<td>{{ row.snr === null ? "?" : Number.isFinite(row.snr) ? row.snr.toFixed(1) : "∞" }}</td>
+										</template>
+										<template v-else><td>—</td><td>—</td><td>—</td></template>
+										<td>{{ $t(`plugins.resonanceLab.motorTune.surveyTable.${!row.measurable ? "nyquist" : tuneSurveyChosen.includes(row.harmonic) ? "chosen" : row.quiet ? "quiet" : "slotsFull"}`) }}</td>
+									</tr>
+								</tbody>
+							</v-table>
+						</details>
+					</div>
+					<v-alert v-if="selectedAccelToolInactive" type="warning" variant="tonal" density="compact" class="mt-2">
+						{{ $t("plugins.resonanceLab.accel.toolNotActive", { tool: selectedAccelToolInactive }) }}
+					</v-alert>
 				</v-sheet>
 
 				<!-- Progress -->
@@ -567,20 +642,32 @@
 							</div>
 						</v-card-text>
 					</v-card>
-					<v-alert v-for="row in motorTuneRows" :key="row.harmonic" :type="row.improved ? 'success' : 'info'" variant="tonal" density="compact" class="mb-2">
+					<v-alert v-if="motorTuneResult.overflows" type="warning" variant="tonal" density="compact" class="mb-2">
+						{{ $t("plugins.resonanceLab.overflows", { count: motorTuneResult.overflows }) }}
+					</v-alert>
+					<v-alert v-for="row in motorTuneRows" :key="row.harmonic" :type="row.type" variant="tonal" density="compact" class="mb-2">
 						{{ row.text }}
 					</v-alert>
 					<v-alert v-if="motorTuneResult.codes.length > 0" type="info" variant="tonal" density="compact" class="mb-2">
 						{{ $t(tunePhaseStepping ? "plugins.resonanceLab.motorTune.resultCodesPhaseStepping" : "plugins.resonanceLab.motorTune.resultCodes") }}
 						<pre class="rlab-gcode-preview mt-1">{{ motorTuneResult.codes.join("\n") }}</pre>
 					</v-alert>
-					<div class="d-flex ga-2 mt-2">
+					<v-alert v-if="tuneCheckVerdict" :type="tuneCheckVerdict.type" variant="tonal" density="comfortable" class="mb-2">
+						<div class="font-weight-medium">{{ tuneCheckVerdict.text }}</div>
+						<div v-for="(row, i) in tuneCheckRows" :key="i" class="text-body-2">{{ row.text }}</div>
+					</v-alert>
+					<div class="d-flex align-center ga-2 mt-2">
 						<v-btn color="primary" variant="tonal" prepend-icon="mdi-content-save-check-outline" @click="keepMotorTune">
 							{{ $t("plugins.resonanceLab.motorTune.keep") }}
 						</v-btn>
 						<v-btn variant="text" prepend-icon="mdi-undo" @click="discardMotorTune">
 							{{ $t("plugins.resonanceLab.motorTune.discard") }}
 						</v-btn>
+						<v-spacer />
+						<v-btn variant="tonal" prepend-icon="mdi-check-decagram-outline" :loading="running" :disabled="!canVerifyMotorTune" @click="verifyMotorTune">
+							{{ $t("plugins.resonanceLab.motorTune.checkButton") }}
+						</v-btn>
+						<HelpTip :text="$t('plugins.resonanceLab.motorTune.checkHint')" />
 					</div>
 				</template>
 
@@ -759,8 +846,13 @@ const {
 	accelItems,
 	accelItemsForPicker,
 	selectedAccelWiringMissing,
+	selectedAccelToolInactive,
 	accelSetupHints,
 	selectedAccel,
+	rateProbing,
+	canCheckAccelRate,
+	accelRateReadout,
+	checkAccelRate,
 	axisItems,
 	motorItems,
 	motorFreqHint,
@@ -794,10 +886,26 @@ const {
 	motorVerdict,
 	motorFindingRows,
 	tunePhaseStepping,
+	tuneSelected,
+	tuneManual,
+	tuneSurveyData,
+	tuneSurveyRows,
+	tuneSurveyStale,
+	tuneSurveyChosen,
+	canSurvey,
+	runTuneSurvey,
+	tuneHarmonicOptions,
+	numTuneMoves,
+	tuneExcess,
+	tuneNeedsPhaseMode,
 	tuneChipUnsupported,
 	detectedChip,
 	detectingChip,
 	tuneStatus,
+	tuneCheckRows,
+	tuneCheckVerdict,
+	canVerifyMotorTune,
+	verifyMotorTune,
 	motorTuneRows,
 	motorTuneVerdict,
 	keepMotorTune,
@@ -872,6 +980,14 @@ const {
 </script>
 
 <style scoped>
+/* The task panel is a scrolling flex column. Vuetify's alerts, sheets and cards are overflow:hidden, so
+   as flex items they shrink to fit instead of letting the panel scroll - clipping a long result
+   (the last lines of a code list, the bottom of an error banner). Keep every direct child at its own
+   height. Inline `flex: 1 1 0` on the chart wrappers still wins over this. */
+.rlab-task-panel > * {
+	flex-shrink: 0;
+}
+
 /* Task-rail item titles were being truncated with an ellipsis ("Accelerometer orien...") - the
    longest labels don't fit Vuetify's default single-line, nowrap-and-ellipsis title even at the
    rail's 220px width. Let them wrap onto a second line instead, so any future/longer label degrades

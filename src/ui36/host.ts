@@ -29,6 +29,7 @@ export function createHost(): HostAdapter {
 
 		// 3.6's action takes an object payload with "log" (not 3.7's positional "logReply") - same
 		// intent, different shape per generation.
+		supportsPhaseStepping: false,
 		sendCode: async (code, quiet) => String(await store.dispatch("machine/sendCode", { code, log: !quiet }) ?? ""),
 		// 3.6 takes the transfer flags as named fields of the payload where 3.7 takes them positionally;
 		// the intent is the same - stay silent, this is background I/O the page reports on itself.

@@ -36,6 +36,8 @@ export interface HostAdapter {
 	 *  console with noise the user never asked to see (per Christian Hammacher's suggestion).
 	 */
 	sendCode(code: string, quiet?: boolean): Promise<string>;
+	/** False on DWC 3.6, which has no phase stepping: the motor-tune task then never switches an axis into it. Undefined = supported. */
+	supportsPhaseStepping?: boolean;
 	/** Upload text content to a full path (e.g. "0:/sys/resonanceLab/sweep.g"). */
 	upload(path: string, content: string): Promise<void>;
 	/** Download a text file by full path. */

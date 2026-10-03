@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
-	analysisWindow, buildMotorMove, constantSpeedWindow, deriveMotorOptions, maxSpeedForRate,
+	analysisWindow, buildMotorMove, constantSpeedWindow, deriveMotorOptions, maxSpeedForRate, maxTuneSpeed,
 } from "../src/capture/motorMoves";
 import type { MachineIO } from "../src/capture/orchestrator";
 import { runMotorPointCapture } from "../src/capture/orchestrator";
@@ -119,6 +119,24 @@ describe("maxSpeedForRate", () => {
 		const speed = maxSpeedForRate(option, 1344);
 		const fullStepHz = speed * option.stepFactor * option.fullStepsPerMm;
 		expect(fullStepHz).toBeLessThan(1344 / 2);
+	});
+});
+
+describe("maxTuneSpeed", () => {
+	const option = deriveMotorOptions(coreXY).find((o) => o.label === "X+Y")!;
+
+	it("equals maxSpeedForRate for any selection no higher than order 1", () => {
+		expect(maxTuneSpeed([1, 2, 4], option, 1344)).toBe(maxSpeedForRate(option, 1344));
+	});
+
+	it("follows the highest selected harmonic", () => {
+		expect(maxTuneSpeed([2, 4, 6], option, 3200)).toBeCloseTo(maxSpeedForRate(option, 3200) / 1.5, 9);
+		expect(maxTuneSpeed([2, 4, 8], option, 3200)).toBeCloseTo(maxSpeedForRate(option, 3200) / 2, 9);
+	});
+
+	it("keeps the highest selected order below Nyquist", () => {
+		const speed = maxTuneSpeed([8], option, 1344);
+		expect(2 * speed * option.stepFactor * option.fullStepsPerMm).toBeLessThan(1344 / 2);
 	});
 });
 
