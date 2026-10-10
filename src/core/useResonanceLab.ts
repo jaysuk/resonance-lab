@@ -537,13 +537,9 @@ export function useResonanceLab(host: HostAdapter) {
 		if (!wiring) {
 			return null;
 		}
-		const q = wiring.spiFrequency ? ` Q${wiring.spiFrequency}` : "";
-		// Reconfiguring resets resolution and rate to the firmware defaults, so a slot the object model
-		// describes is re-issued with the values it currently has (0 = the firmware doesn't know them).
-		const live = accel.slot !== undefined ? liveAccelState(accelCanAddress(accel)) : null;
-		const r = live && live.resolution > 0 ? ` R${live.resolution}` : "";
-		const rate = live && live.samplingRate > 0 ? ` S${live.samplingRate}` : "";
-		return { code: `M955 P${wiring.slot} C"${wiring.cSpec}" I${orientation}${q}${r}${rate}`, slot: wiring.slot };
+		// Only P, C and I: never send `S` (caps the sampling rate below what some chips, e.g. the LIS2DW,
+		// can do), `Q` or `R` - the firmware defaults apply to all three.
+		return { code: `M955 P${wiring.slot} C"${wiring.cSpec}" I${orientation}`, slot: wiring.slot };
 	}
 
 	/**
@@ -574,8 +570,7 @@ export function useResonanceLab(host: HostAdapter) {
 		if (!wiring) {
 			return null;
 		}
-		const q = wiring.spiFrequency ? ` Q${wiring.spiFrequency}` : "";
-		const code = `M955 P${wiring.slot} C"${wiring.cSpec}" I${entry.orientation}${q} R${entry.resolution ?? 10} S${entry.samplingRate ?? 1000}`;
+		const code = `M955 P${wiring.slot} C"${wiring.cSpec}" I${entry.orientation}`; // never S/Q/R: firmware defaults
 		return { code, slot: wiring.slot };
 	}
 
@@ -2069,7 +2064,7 @@ export function useResonanceLab(host: HostAdapter) {
 				const entries: Array<{ speed: number; capture: ReturnType<typeof parseAccelCsv> }> = [];
 				await withShaperDisabled(async () => {
 					for (let speed = adv.value.speedMin; speed <= adv.value.speedMax; speed += Math.max(1, adv.value.speedStep)) {
-						const run = await raceCancellable(runSpeedPointCapture(io, { accelerometer: accel, axis: selectedAxis.value, center: axisCenter(), speed, expectedSampleRate: sampleRate, activationCode }));
+						const run = await raceCancellable(runSpeedPointCapture(io, { accelerometer: accel, axis: selectedAxis.value, center: axisCenter(), speed, expectedSampleRate: sampleRate, activationCode, activationSlot }));
 						entries.push({ speed, capture: parseAccelCsv(await raceCancellable(downloadCapture(io, run))) });
 					}
 				});

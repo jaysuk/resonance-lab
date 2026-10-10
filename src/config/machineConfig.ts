@@ -205,26 +205,15 @@ export async function findExistingWiring(host: HostAdapter, accel: Accelerometer
  * value itself (`sensors.accelerometers[].port`) and the slot it occupies, so those are authoritative -
  * they are what is actually configured right now, which config.g's text may not be (a runtime M955, a
  * macro, `C{...}` expression syntax). Two pins are the norm on an SPI-connected STM32 toolboard (CS
- * then INT, e.g. "121.spi.cs.acc+int.acc") and pass through untouched. The one thing the object model
- * still doesn't carry is `Q` (SPI clock), so that alone is looked up in the files, best-effort - a
- * missing or unreadable file must not stop an object-model-known accelerometer being saved or
- * re-oriented, it just leaves Q at the firmware default. Before rc.2 this is `findExistingWiring`.
+ * then INT, e.g. "121.spi.cs.acc+int.acc") and pass through untouched. `Q` (SPI clock) is deliberately
+ * not carried: no M955 this plugin builds ever sends it, so the firmware default applies.
+ * Before rc.2 this is `findExistingWiring`.
  */
 export async function resolveAccelWiring(host: HostAdapter, accel: AccelerometerRef): Promise<AccelWiring | null> {
 	if (accel.slot === undefined || !accel.port) {
 		return findExistingWiring(host, accel);
 	}
-	let spiFrequency: number | undefined;
-	try {
-		spiFrequency = (await findExistingWiring(host, accel))?.spiFrequency;
-	} catch {
-		// Q is a nicety here - see above
-	}
-	const wiring: AccelWiring = { cSpec: accel.port, canAddress: accelCanAddress(accel), slot: accel.slot };
-	if (spiFrequency !== undefined) {
-		wiring.spiFrequency = spiFrequency;
-	}
-	return wiring;
+	return { cSpec: accel.port, canAddress: accelCanAddress(accel), slot: accel.slot };
 }
 
 export type ShaperScope = "all" | "tool";
@@ -398,16 +387,15 @@ export async function planAccelSave(
 		// wiring was found via tpost, or this is its first-ever save) gets a freshly assigned slot.
 		const existingConfigWiring = findAccelWiring(configText, canAddress);
 		const slot = existingConfigWiring?.slot ?? preferredFreeSlot(configText, accel.slot);
-		const newLine = `M955 P${slot} C"${wiring.cSpec}" I${orientation}${wiring.spiFrequency ? ` Q${wiring.spiFrequency}` : ""}`;
+		const newLine = `M955 P${slot} C"${wiring.cSpec}" I${orientation}`;
 		const isThisBoard = accelLineForBoard(canAddress);
 		const plan = buildPlan(configPath(host), configText, "M955", isThisBoard, (raw) => setParam(raw, "I", orientation), newLine);
 		return { plan, notes }; // no displacement note possible - nothing is displaced (each board keeps its own slot)
 	}
 
-	// R/S deliberately omitted: they're the CURRENT session's sampling settings, which each capture
-	// sets for itself in its own activation line. Persisting them would freeze one task's rate into
-	// config.g as a machine default. C + I + Q is the durable wiring+orientation; nothing else.
-	const newLine = `M955 P0 C"${wiring.cSpec}" I${orientation}${wiring.spiFrequency ? ` Q${wiring.spiFrequency}` : ""}`;
+	// Q/R/S deliberately omitted: C + I is the durable wiring+orientation; nothing else. Q/S would pin
+	// the SPI clock / sampling rate below what the chip can do (S caps a LIS2DW's maximum rate).
+	const newLine = `M955 P0 C"${wiring.cSpec}" I${orientation}`;
 	const configText = await readConfig(host);
 	const isThisBoard = accelLineForBoard(canAddress);
 	// Editing an EXISTING line also ensures P0 is present, not just I - a line saved by a version of
@@ -576,7 +564,7 @@ export async function planAccelMigration(
 		const slot = existing?.slot ?? preferredFreeSlot(configText, runningSlots.get(wiring.canAddress), assignedThisBatch);
 		assignedThisBatch.add(slot);
 		const orientation = orientationOf(tpostTextByTool.get(toolNumber) ?? "", wiring.canAddress);
-		const newLine = `M955 P${slot} C"${wiring.cSpec}" I${orientation}${wiring.spiFrequency ? ` Q${wiring.spiFrequency}` : ""}`;
+		const newLine = `M955 P${slot} C"${wiring.cSpec}" I${orientation}`;
 		const isThisBoard = accelLineForBoard(wiring.canAddress);
 		const plan = buildPlan(configPath(host), configText, "M955", isThisBoard, (raw) => setParam(raw, "I", orientation), newLine);
 		additions.push(plan);

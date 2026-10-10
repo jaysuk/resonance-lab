@@ -320,6 +320,11 @@ first if only the 3.6 build breaks after adding a new shared module.
     `activationCode` string and, when present, send it and THEN sample `runsBefore` (never the other
     way — sampling first would snapshot the about-to-be-deleted object's run counter, and completion
     detection would silently fall back to file polling on every single capture, forever).
+  - **Never send `S`, `Q` or `R` in any `M955` — only `P`, `C`, `I`.** `S` caps the sampling rate below what some
+    chips (the LIS2DW) can reach; the firmware defaults are right for all three. `buildActivationCode`,
+    `buildActivationCodeWithOrientation` and `planAccelSave`/migration all build `M955 P<slot> C"…" I<n>`.
+    An existing config.g line edited in place via `setParam` keeps whatever tokens the user wrote (we only touch `I`).
+    The `S` on `M956` is the *sample count*, a different parameter, and stays.
   - **Before rc.2 the `C`/`Q` wiring string appears in no object-model field anywhere** — it only ever exists as
     the text of an `M955` line in config.g or a tool's own `tpost<N>.g`. `machineConfig.ts`'s
     `findExistingWiring` checks that tool's `tpost<N>.g` first (cheap — reading costs nothing), then

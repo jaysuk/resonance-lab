@@ -206,7 +206,7 @@ export interface SweepCaptureOptions extends SweepOptions {
 	/** Directory the generated program file is uploaded to. Defaults to DEFAULT_PROGRAM_DIR. */
 	programDir?: string;
 	/** Full M955 line to send immediately before arming (RRF >= 3.7.0-rc.1's single-accelerometer
-	 *  scheme, e.g. `M955 P0 C"121.i2c.lis" I6 Q2000000 R10 S1344`) - undefined on legacy firmware,
+	 *  scheme, e.g. `M955 P0 C"121.i2c.lis" I6`) - undefined on legacy firmware,
 	 *  where the M956 line's own P selects the accelerometer by board.driver id as before. When
 	 *  present, that M956 line's P becomes literally "P0" instead - `gb.MustSee('P')` makes P
 	 *  mandatory in M956 exactly as in M955 (confirmed against RRF source, not the changelog's

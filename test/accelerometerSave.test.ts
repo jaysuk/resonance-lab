@@ -67,7 +67,7 @@ describe("resolveAccelWiring - the object model's port is the wiring", () => {
 
 	it("takes Q (the one thing the object model doesn't carry) from the file when it's there", async () => {
 		const { host } = fakeHost({ "0:/sys/config.g": 'M955 P2 C"121.spi.cs.acc+int.acc" I20 Q4000000\n' });
-		expect(await resolveAccelWiring(host, SPI_ACCEL)).toEqual({ cSpec: "121.spi.cs.acc+int.acc", canAddress: 121, slot: 2, spiFrequency: 4000000 });
+		expect(await resolveAccelWiring(host, SPI_ACCEL)).toEqual({ cSpec: "121.spi.cs.acc+int.acc", canAddress: 121, slot: 2 });
 	});
 
 	it("prefers the object model's port over a stale line in config.g", async () => {
@@ -128,7 +128,7 @@ describe("planAccelSave - sensors.accelerometers[] (RRF >= 3.7.0-rc.2)", () => {
 	it("carries Q into a new line when a file records it", async () => {
 		const { host } = fakeHost({ "0:/sys/tpost0.g": 'M955 P0 C"121.spi.cs.acc+int.acc" I20 Q4000000\n', "0:/sys/config.g": "G90\n" });
 		const { plan } = await planAccelSave(host, SPI_ACCEL, "all", "206");
-		expect(plan.after).toContain('M955 P2 C"121.spi.cs.acc+int.acc" I206 Q4000000');
+		expect(plan.after).toContain('M955 P2 C"121.spi.cs.acc+int.acc" I206');
 	});
 });
 
