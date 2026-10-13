@@ -6,7 +6,7 @@ import {
 	DEFAULT_DAMPING_RATIO, estimateRemainingVibrations, estimateShaperResponse, estimateSmoothing,
 	findBestShaper, findBestShaperCombined, fitShaper, normalizeToFrequencies,
 } from "../src/analysis/recommend";
-import { SHAPERS } from "../src/analysis/shapers";
+import { maxShaperDamping, SHAPERS } from "../src/analysis/shapers";
 import { kaiserWindow, welchPsd, welchSegmentLength } from "../src/analysis/spectrum";
 
 // ─── FFT ──────────────────────────────────────────────────────────────────────
@@ -137,6 +137,22 @@ describe("recommendation engine", () => {
 		// A caller-supplied ratio (e.g. a measured zeta) must come through unchanged, not be silently
 		// dropped once it's only used for shaper construction and not scoring.
 		expect(fitShaper(mzv, freqs, norm, { dampingRatio: 0.075 })!.dampingRatio).toBe(0.075);
+	});
+
+	// RRF 3.7.0 rejects M593 S above 0.3 (EI2) / 0.2 (EI3) / 0.9 (others) with "parameter 'S' too high"
+	// instead of accepting it, so a measured zeta above a shaper's cap must never reach the M593 line.
+	it("caps the reported damping ratio at what RRF 3.7.0 accepts for each shaper type", () => {
+		const { freqs, psd } = syntheticPsd(45);
+		const norm = normalizeToFrequencies(freqs, psd);
+		const byName = (n: string) => SHAPERS.find((c) => c.name === n)!;
+		expect(fitShaper(byName("ei3"), freqs, norm, { dampingRatio: 0.28 })!.dampingRatio).toBe(0.2);
+		expect(fitShaper(byName("ei2"), freqs, norm, { dampingRatio: 0.28 })!.dampingRatio).toBe(0.28);
+		expect(fitShaper(byName("ei2"), freqs, norm, { dampingRatio: 0.45 })!.dampingRatio).toBe(0.3);
+		expect(fitShaper(byName("mzv"), freqs, norm, { dampingRatio: 0.28 })!.dampingRatio).toBe(0.28);
+		const combined = findBestShaperCombined([{ axis: "X", freqBins: freqs, psd: norm }], { dampingRatio: 0.28 })!;
+		for (const fit of combined.allShapers) {
+			expect(fit.dampingRatio).toBeLessThanOrEqual(maxShaperDamping(fit.name));
+		}
 	});
 
 	it("findBestShaper returns a verdict that beats doing nothing, preferring simpler shapers", () => {

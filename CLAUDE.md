@@ -62,9 +62,11 @@ first if only the 3.6 build breaks after adding a new shared module.
   spectrogram), `move` (quick native capture), `custom` (user-supplied G-code).
 - **`motor` task** (`src/analysis/motorHarmonics.ts`, `src/capture/motorMoves.ts`) — measures the
   motor and driver themselves rather than the machine's structural response, unlike every other task.
-  Runs a motor-isolating move (on core kinematics, the column of `move.kinematics.forwardMatrix`
-  belonging to one motor — `inverseMatrix * forwardMatrix` is the identity, so that column is exactly
-  the Cartesian direction that drives only that motor; on other kinematics, Z alone) at a range of
+  Runs a motor-isolating move (on core kinematics, the motor's **row** of `move.kinematics.forwardMatrix`
+  — RRF indexes `forwardMatrix(motor, axis)` and `inverseMatrix(axis, motor)`, and
+  `inverseMatrix * forwardMatrix` is the identity, so that row is exactly the Cartesian direction that
+  drives only that motor; an earlier transposed read passed only because plain CoreXY/XZ matrices are
+  symmetric. On other kinematics, Z alone) at a range of
   constant speeds, and evaluates vibration at quarter-multiples of the motor's full-step frequency (a
   current-waveform error repeats once per electrical cycle, i.e. four full steps): 1× = detent
   torque/step ripple, 0.5× = coil current imbalance, 0.25×/0.75× = distorted current waveform. Reports
@@ -556,6 +558,17 @@ first if only the 3.6 build breaks after adding a new shared module.
   config.g therefore edits only the `I` token in place (`dwc-gcode-core/edit`'s `setParam`, which masks
   quoted spans before searching so it can't be fooled by a digit inside a `C"^spi.cs1"`-style pin
   name); it never rewrites the whole line, which would silently discard `C`/`Q`.
+- **RRF 3.7.0 stable (reviewed against `3.7.0-rc.2..3.7.0`, 53 commits) changed a few things this plugin
+  touches.** (1) `M593 S` is now range-checked per shaper type and *rejected*, not clamped, above the cap —
+  0.9 generally, **0.3 for EI2, 0.2 for EI3** ("parameter 'S' too high"); a measured ζ up to 0.3 is fed to
+  the fit, so `maxShaperDamping` (shapers.ts) caps the design ratio in `fitShaper`/`fitShaperCombined` and
+  that capped value is what the M593 line carries. Test-set ratios (the machine's real ζ) are not capped.
+  (2) MZV's firmware coefficients were wrong in ≤rc.2 (`a3/sum` first); `shapers.ts` always had the
+  intended `a1` first, so no model change — only rc.2-or-older machines run a slightly different MZV.
+  (3) `DriverMode` is now fixed (`direct`=4, `assistedOpen`=5, `unknown`=6) on every build; handled by
+  `isSoftwareCommutationMode`. (4) Local drivers' replies now read `Driver 0.N …` on CAN builds;
+  `parsePhaseCorrections` is prefix-agnostic. (5) The kinematics matrices cover *all* axes, not just visible
+  ones. (6) Custom shaper (`M593 P"custom"`) delays must be strictly increasing; the plugin never sends one.
 - **RRF has no smoothing parameter, no smoothing report, and nothing acceleration-linked anywhere in
   its shaping path** (checked directly against `AxisShaper.cpp`/`Move.cpp`) — unlike the planner the
   original smoothing/max-accel estimate model was written for. Those figures were removed from all

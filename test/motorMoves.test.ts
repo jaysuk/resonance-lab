@@ -55,6 +55,24 @@ describe("deriveMotorOptions", () => {
 		}
 	});
 
+	// RRF's forwardMatrix(motor, axis) / inverseMatrix(axis, motor): a plain CoreXY matrix is symmetric so it
+	// can't tell the two orientations apart. motor0 = x + y, motor1 = y  =>  forward rows [1, 0] and [-1, 1].
+	it("reads an asymmetric matrix with row = motor (forward) and row = axis (inverse)", () => {
+		const asymmetric = {
+			move: {
+				...coreXY.move,
+				kinematics: { forwardMatrix: [[1, 0], [-1, 1]], inverseMatrix: [[1, 0], [1, 1]] },
+			},
+		};
+		const options = deriveMotorOptions(asymmetric);
+		expect(options.map((o) => o.label)).toEqual(["X", "X-Y"]);
+		expect(options[0].direction).toEqual([1]);
+		expect(options[0].stepFactor).toBeCloseTo(1, 6);
+		expect(options[1].direction[0]).toBeCloseTo(Math.SQRT1_2, 6);
+		expect(options[1].direction[1]).toBeCloseTo(-Math.SQRT1_2, 6);
+		expect(options[1].stepFactor).toBeCloseTo(Math.SQRT1_2, 6);
+	});
+
 	it("every direction is a unit vector with a positive first component", () => {
 		for (const o of deriveMotorOptions(coreXY)) {
 			const length = Math.sqrt(o.direction.reduce((sum, v) => sum + v * v, 0));

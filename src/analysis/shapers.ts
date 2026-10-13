@@ -93,6 +93,15 @@ function ei3(freq: number, zeta: number): ShaperImpulses {
 	return { amplitudes: [a1, a2, a3, a4, a5], delays: [0, d1, d2, d3, d4] };
 }
 
+/**
+ * Largest damping ratio (M593 S) RRF accepts for a shaper type. Since 3.7.0 the firmware *rejects*
+ * ("parameter 'S' too high") anything above this rather than clamping, because the EI polynomial
+ * fits go backward-moving outside their range; before it was 0.99 for every type.
+ */
+export function maxShaperDamping(name: ShaperName): number {
+	return name === "ei2" ? 0.3 : name === "ei3" ? 0.2 : 0.9;
+}
+
 /** RRF's shaper set, ordered simplest-first (the recommendation engine prefers simpler shapers). */
 export const SHAPERS: Array<ShaperDefinition> = [
 	{ name: "mzv", rrfName: "mzv", minFreq: 23, init: mzv },

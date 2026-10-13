@@ -16,7 +16,7 @@
  *  - a more complex shaper must EARN its extra smoothing/latency: it only displaces a simpler one
  *    on a clearly better score.
  */
-import { SHAPERS, type ShaperDefinition, type ShaperImpulses, type ShaperName } from "./shapers";
+import { maxShaperDamping, SHAPERS, type ShaperDefinition, type ShaperImpulses, type ShaperName } from "./shapers";
 
 export const DEFAULT_DAMPING_RATIO = 0.1;
 export const MIN_FREQ = 5;
@@ -158,7 +158,7 @@ export interface FitOptions {
 
 /** Scan a frequency range for one shaper type and return its best fit. */
 export function fitShaper(cfg: ShaperDefinition, freqBins: ArrayLike<number>, psd: ArrayLike<number>, options: FitOptions = {}): ShaperFit | null {
-	const dampingRatio = options.dampingRatio ?? DEFAULT_DAMPING_RATIO;
+	const dampingRatio = Math.min(options.dampingRatio ?? DEFAULT_DAMPING_RATIO, maxShaperDamping(cfg.name));
 	const testRatios = options.testDampingRatios ?? TEST_DAMPING_RATIOS;
 	const minFreq = options.minFreq ?? 0;
 	const maxFreq = options.maxFreq ?? MAX_FREQ;
@@ -287,7 +287,7 @@ export interface CombinedRecommendationResult {
  * applies one M593 shaper machine-wide (see findBestShaper's header note).
  */
 function fitShaperCombined(cfg: ShaperDefinition, spectra: Array<AxisSpectrum>, options: FitOptions = {}): CombinedShaperFit | null {
-	const dampingRatio = options.dampingRatio ?? DEFAULT_DAMPING_RATIO;
+	const dampingRatio = Math.min(options.dampingRatio ?? DEFAULT_DAMPING_RATIO, maxShaperDamping(cfg.name));
 	const testRatios = options.testDampingRatios ?? TEST_DAMPING_RATIOS;
 	const minFreq = options.minFreq ?? 0;
 	const maxFreq = options.maxFreq ?? MAX_FREQ;

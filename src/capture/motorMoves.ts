@@ -3,9 +3,9 @@
  * step rate, and the trapezoidal-move math needed to find that move's constant-speed window. Shared
  * by the motor-quality task's capture and analysis.
  *
- * On core kinematics (CoreXY etc.) the column of the kinematics forward matrix belonging to a motor
- * IS the Cartesian direction that drives only that motor, because inverseMatrix * forwardMatrix is
- * the identity. On non-core kinematics only Z runs the motors at a constant step rate.
+ * On core kinematics (CoreXY etc.) a motor's row of the object model's forwardMatrix IS the Cartesian
+ * direction that drives only that motor, because inverseMatrix * forwardMatrix is the identity (RRF:
+ * forwardMatrix(motor, axis), inverseMatrix(axis, motor)). On non-core kinematics only Z runs the motors at a constant step rate.
  */
 
 interface ModelAxis {
@@ -68,7 +68,7 @@ function model(m: unknown): ResonanceLabMotorModel {
 
 /**
  * Every motor that can be driven alone at a constant step rate: on core kinematics, one option per
- * column of the forward matrix (skipped when it touches a non-visible axis, or when the axis's
+ * motor row of the forward matrix (skipped when it touches a non-visible axis, or when the axis's
  * microstepping isn't reported - a wrong assumed microstepping would produce a confident analysis at
  * the wrong frequency, which is worse than offering no analysis); on non-core kinematics, Z alone.
  */
@@ -90,7 +90,9 @@ export function deriveMotorOptions(m: unknown): Array<MotorOption> {
 
 	if (Array.isArray(forwardMatrix) && forwardMatrix.length > 0) {
 		for (let motorIndex = 0; motorIndex < axes.length && motorIndex < forwardMatrix.length; motorIndex++) {
-			const column = axes.map((_, axisIndex) => forwardMatrix[axisIndex]?.[motorIndex] ?? 0);
+			// RRF's forwardMatrix(motor, axis): row = motor, so a motor's Cartesian direction is its ROW. (The
+			// matrix is symmetric on plain CoreXY/XZ, which is why a transposed read used to pass unnoticed.)
+			const column = axes.map((_, axisIndex) => forwardMatrix[motorIndex]?.[axisIndex] ?? 0);
 			const involvedIndices = axes.map((_, i) => i).filter((i) => column[i] !== 0);
 			if (involvedIndices.length === 0 || involvedIndices.some((i) => axes[i].visible === false)) {
 				continue;
@@ -105,8 +107,8 @@ export function deriveMotorOptions(m: unknown): Array<MotorOption> {
 			if (direction[0] < 0) {
 				direction = direction.map((v) => -v);
 			}
-			const inverseRow = inverseMatrix[motorIndex] ?? [];
-			const stepFactor = Math.abs(involvedIndices.reduce((sum, i, idx) => sum + (inverseRow[i] ?? 0) * direction[idx], 0));
+			// inverseMatrix(axis, motor): row = axis, so the motor's travel for a move along `direction` sums down its column.
+			const stepFactor = Math.abs(involvedIndices.reduce((sum, i, idx) => sum + (inverseMatrix[i]?.[motorIndex] ?? 0) * direction[idx], 0));
 			const involvedLetters = involvedIndices.map((i) => axes[i].letter ?? "");
 			const label = involvedLetters.map((letter, idx) => `${idx > 0 ? (direction[idx] < 0 ? "-" : "+") : ""}${letter}`).join("");
 			options.push({
