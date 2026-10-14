@@ -637,8 +637,8 @@ first if only the 3.6 build breaks after adding a new shared module.
   order), which would offer a 3.6 user the Vue 3 package. Each host therefore sets `assetPattern`
   (`ui37`: negative lookaheads excluding `-dwc36.zip` **and** `-srcmap.zip`; `ui36`: only
   `-dwc36.zip`) and `updateCheck.ts` passes it through. If a third target is ever added, that pattern
-  is the thing to update. `scripts/release-footer.mjs` likewise emits one `dwc-plugin-update` metadata
-  comment per asset.
+  is the thing to update. the shared release footer (`jaysuk/dwc-plugin-workflows`, `scripts/release-footer.mjs`) likewise emits one
+  `dwc-plugin-update` metadata comment per asset.
 - **The DWC 3.7 build also emits a `-srcmap.zip` alongside the real package** (`dwc-plugin-verify-
   build`'s underlying `build-plugin-pkg.js` writes both). It must never reach the GitHub Release: it
   alphabetically uploads *before* the plain `.zip`, so a 3.7 `assetPattern` that didn't also exclude it

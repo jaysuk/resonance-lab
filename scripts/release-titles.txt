@@ -1,0 +1,25 @@
+# GitHub Release titles for resonance-lab, one per line (blank lines and # comments ignored).
+# Picked by version index (semver-sorted), wrapping if it runs out. Vibration-and-resonance puns - top up
+# the list as it gets low (the release workflow warns when few unused titles remain).
+Good Vibrations
+Shake It Up
+Sine of the Times
+Peak Performance
+Vibe Check
+Ringing Endorsement
+Damping Spirits
+Harmonic Convergence
+Fundamental Frequency
+Frequency Modulation
+Wave Goodbye
+Notch Above
+Shaping Up
+Resonance Rhapsody
+Tuning Fork in the Road
+Input Shaper Upper
+Bass Notes
+Octave Up
+Amplitude Attitude
+Standing Wave of Approval
+Rattle and Hum
+Quiet Please
