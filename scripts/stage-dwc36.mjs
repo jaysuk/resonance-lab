@@ -40,7 +40,9 @@ const INCLUDE = ["analysis", "capture", "config", "core", "i18n", "ui36", "state
  * manual preparation. dwc-gcode-core is reached from `config/gcodeEdit.ts`'s replacement import
  * (`config/` is in INCLUDE above, shared with the 3.7 build), so it needs vendoring here too.
  */
-const VENDOR = ["chart.js", "dwc-plugin-runtime", "dwc-gcode-core"];
+// Every runtime `dependencies` entry of package.json, not a hand-kept list: a hand-kept one goes stale
+// the day a dependency is added (it did in ClosedLoopTuning, whose 3.6 build then failed to resolve it).
+const VENDOR = Object.keys(JSON.parse(readFileSync(join(repo, "package.json"), "utf8")).dependencies ?? {});
 
 rmSync(outDir, { recursive: true, force: true });
 mkdirSync(join(outDir, "src"), { recursive: true });

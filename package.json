@@ -11,7 +11,7 @@
     "test:coverage": "vitest run --coverage",
     "typecheck": "node scripts/typecheck.mjs",
     "verify-build": "node scripts/verify-build.mjs",
-    "changelog": "node scripts/changelog.mjs"
+    "release": "node scripts/release.mjs"
   },
   "dependencies": {
     "chart.js": "^4.5.1",
